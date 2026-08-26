@@ -504,6 +504,7 @@ struct FnInst {
     int         is_lambda;
     int         reached;
     const char *doc;
+    Span        inst_site;   /* where a generic instance was requested */
 };
 
 /* rodata blob */

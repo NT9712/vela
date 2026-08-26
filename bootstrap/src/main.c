@@ -128,6 +128,10 @@ Module *load_module(const char *modpath, const char *fromfile, Span sp) {
         }
     }
 
+    if (strlen(path) >= sizeof path - 1) {
+        diag_add(DIAG_ERROR, sp, "module path for `%s` is too long", modpath);
+        return NULL;
+    }
     if (!file_exists(path)) {
         Diag *d = diag_add(DIAG_ERROR, sp, "cannot find module `%s`", modpath);
         diag_note(d, NOSPAN, "looked for `%s`", path);

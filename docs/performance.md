@@ -12,22 +12,22 @@ $ ./bench/run.sh
 
 | workload | time |
 |----------|------|
-| `hello.vela`, including the whole standard library | **130–210 ms** |
-| a 16,000-line, 2,000-function file | **570–1,300 ms** |
-| the same file, `--check` only | **400–500 ms** |
+| `hello.vela`, including the whole standard library | **~110 ms** |
+| a 16,000-line, 2,000-function file | **~480 ms** |
+| the same file, `--check` only | **~260 ms** |
 
 Phase breakdown for the 16k-line file:
 
 ```
-parse   ~200 ms      lex + parse, 100k tokens
-sema    ~170 ms      resolve, type check, monomorphise
-ir      ~165 ms      lowering, verification, optimisation
-codegen  ~50 ms      register allocation, encoding, ELF
-arena    ~30 MB      total compiler memory
+parse   103 ms      lex + parse, 100k tokens
+sema    104 ms      resolve, type check, monomorphise
+ir      127 ms      lowering, verification, optimisation
+codegen  34 ms      register allocation, encoding, ELF
+arena    30 MB      total compiler memory
 ```
 
-Roughly **25,000–30,000 lines per second**, single threaded, whole program,
-from source to executable with no linker in the loop. There is no incremental
+Roughly **33,000 lines per second**, single threaded, whole program, from source
+to executable with no linker in the loop. There is no incremental
 or parallel compilation: every build re-reads and re-checks the standard
 library, which costs about 25 ms.
 
@@ -37,22 +37,24 @@ library, which costs about 25 ms.
 |--------|-------|
 | hello-world binary | **18 KB**, static, no interpreter, no libc |
 | syscalls before `main` | **3** (`mmap` for the heap, the mark stack, the chunk table) |
-| process start to `main` | **~1.4 ms** measured through `fork`+`exec` |
+| process start to `main` | **~0.75 ms** measured through `fork`+`exec` |
 
-For scale, a dynamically linked `/bin/true` on the same machine measured
-2.5 ms through the same harness — most of which is the loader Vela does not have.
+For scale, a dynamically linked `/bin/true` measured **5.4 ms** through the same
+harness on the same machine — most of which is the dynamic loader Vela does not
+have. Both numbers are dominated by `fork`+`exec` on a shared VM; the ratio is
+the meaningful part.
 
 ## Runtime
 
 | benchmark | time |
 |-----------|------|
-| `fib(30)` — 1.6M recursive calls | **77 ms** |
-| n-body, 100,000 steps, 5 bodies | **1.22 s** |
-| push 200,000 integers onto a list | **45 ms** |
-| heapsort 200,000 integers through a closure | **1.09 s** |
-| insert 100,000 string keys into a map | **1.4–1.8 s** |
-| look up 100,000 string keys | **0.7–1.0 s** |
-| join 20,000 strings | **46 ms** |
+| `fib(30)` — 1.6M recursive calls | **75 ms** |
+| n-body, 100,000 steps, 5 bodies | **0.97 s** |
+| push 200,000 integers onto a list | **88 ms** |
+| heapsort 200,000 integers through a closure | **1.24 s** |
+| insert 100,000 string keys into a map | **0.93 s** |
+| look up 100,000 string keys | **1.09 s** |
+| join 20,000 strings | **78 ms** |
 | allocate a 32-byte object | **~250 ns** |
 | empty loop iteration | **~10 ns** |
 

@@ -54,7 +54,6 @@ typedef struct FnCtx {
 static Module *cur_mod;
 static FnCtx  *cur_fn;
 static Vec     work_queue;      /* FnInst* pending body check */
-static Vec     inst_stack;      /* Span* instantiation trace */
 static int     sema_errors;
 static int     sema_quiet;
 
@@ -119,10 +118,22 @@ static Diag *serr(Span sp, const char *fmt, ...) {
     va_end(ap);
     Diag *d = diag_add(DIAG_ERROR, sp, "%s", msg);
     sema_errors++;
-    /* attach the instantiation trace so generic errors are debuggable */
-    for (int i = inst_stack.len - 1; i >= 0 && d; i--) {
-        Span *s = VEC_AT(&inst_stack, Span, i);
-        diag_note(d, *s, "in this instantiation");
+    /* An error inside a generic body is much easier to act on when it also
+       says which instantiation produced it. */
+    if (d && cur_fn && cur_fn->inst && cur_fn->inst->targs.len &&
+        cur_fn->inst->inst_site.file >= 0) {
+        Buf b; memset(&b, 0, sizeof b);
+        buf_str(&b, cur_fn->inst->decl ? cur_fn->inst->decl->name : "?");
+        buf_u8(&b, '[');
+        for (int i = 0; i < cur_fn->inst->targs.len; i++) {
+            if (i) buf_str(&b, ", ");
+            buf_str(&b, ty_str_of(VEC_AT(&cur_fn->inst->targs, Type, i)));
+        }
+        buf_str(&b, "]");
+        buf_u8(&b, 0);
+        diag_note(d, cur_fn->inst->inst_site, "in the instantiation of `%s` requested here",
+                  (char *)b.data);
+        buf_free(&b);
     }
     return d;
 }
@@ -538,6 +549,7 @@ static FnInst *instantiate(Decl *d, Vec *targs, Span sp) {
     } else {
         fi->decl = d;
     }
+    fi->inst_site = sp;
     fi->index = g_unit.fns.len;
     vec_push(&g_unit.fns, fi);
     vec_push(&d->insts, fi);
@@ -791,8 +803,6 @@ static Decl *find_method(Type *recv, const char *name, Vec *targs_out, Span sp) 
     return d;
 }
 
-static Type *inst_ret_type(FnInst *fi) { return fi ? fi->ret : ty_void; }
-
 /* Check a call to a known FnInst-producing Decl. */
 static Type *check_static_call(Expr *e, Decl *d, Vec *explicit_targs, Expr *recv,
                                Type *recv_type, Vec *args, Span sp) {
@@ -887,11 +897,6 @@ static Type *check_static_call(Expr *e, Decl *d, Vec *explicit_targs, Expr *recv
 
     if (recv_type && d->has_self && recv) recv->type = recv_type;
 
-    int depth = inst_stack.len;
-    if (depth > 60) {
-        serr(sp, "generic instantiation is too deep (recursive generic function?)");
-        return ty_int;
-    }
     FnInst *fi = instantiate(d, &targs, sp);
     e->target = fi;
     e->is_static = 1;
@@ -2834,8 +2839,6 @@ static void check_consts(Module *m) {
     cur_fn = savefn;
     cur_mod = save;
 }
-
-static void mark_expr_unused(void) { }
 
 int sema_run(Unit *u) {
     sema_errors = 0;

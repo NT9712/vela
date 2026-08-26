@@ -172,8 +172,6 @@ static void sse_rr(uint8_t op, int d, int s) {
 static void ucomisd(int a, int b) { b1(0x66); rex(0, a, 0, b); b1(0x0F); b1(0x2E); modrm(3, a, b); }
 static void cvtsi2sd(int x, int r) { b1(0xF2); rex(1, x, 0, r); b1(0x0F); b1(0x2A); modrm(3, x, r); }
 static void cvttsd2si(int r, int x) { b1(0xF2); rex(1, r, 0, x); b1(0x0F); b1(0x2C); modrm(3, r, x); }
-static void movq_x_r(int x, int r) { b1(0x66); rex(1, x, 0, r); b1(0x0F); b1(0x6E); modrm(3, x, r); }
-static void movq_r_x(int r, int x) { b1(0x66); rex(1, x, 0, r); b1(0x0F); b1(0x7E); modrm(3, x, r); }
 
 /* condition codes */
 enum { CC_O=0, CC_NO=1, CC_B=2, CC_AE=3, CC_E=4, CC_NE=5, CC_BE=6, CC_A=7,

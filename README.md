@@ -36,8 +36,9 @@ Vela's bet is that a language can be both if it stays small:
 * **Simple** — the whole language is one document ([the specification](spec/SPEC.md)).
   Four primitive types, one reference model, no traits, no macros, no lifetimes,
   no implicit conversions.
-* **Fast** — `velac` emits machine code directly. A hello-world binary is 10 KB,
-  starts in under a millisecond, and makes exactly three syscalls before `main`.
+* **Fast** — `velac` emits machine code directly at ~33,000 lines per second.
+  A hello-world binary is 18 KB, starts in under a millisecond, and makes
+  exactly three syscalls before `main`.
 * **Expressive** — closures, generics, sum types, pattern matching, string
   interpolation, and errors as values.
 * **Cohesive** — the garbage collector, the string type, the collections, the

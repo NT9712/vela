@@ -8,7 +8,8 @@
 
 CC      ?= cc
 CFLAGS  ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter \
-           -Wno-misleading-indentation -Wno-unused-function
+           -Wno-misleading-indentation -Wno-unused-function \
+           -Wno-format-truncation   # snprintf into fixed path buffers is deliberate
 PREFIX  ?= /usr/local
 
 SRC     := $(wildcard bootstrap/src/*.c)
