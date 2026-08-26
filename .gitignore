@@ -4,3 +4,4 @@ build/
 a.out
 vela.lock
 examples/todo/deps/
+dist/

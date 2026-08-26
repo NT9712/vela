@@ -1,0 +1,101 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag to release (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: resolve tag
+        id: v
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}"    >> "$GITHUB_OUTPUT"
+
+      - name: build
+        run: make
+
+      - name: test
+        run: ./tests/run.sh
+
+      - name: package
+        id: pkg
+        run: |
+          make dist VERSION="${{ steps.v.outputs.version }}"
+          cd dist
+          for f in *.tar.gz; do sha256sum "$f" > "$f.sha256"; done
+          ls -l
+          echo "sha=$(cat *.tar.gz.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: release notes
+        run: |
+          {
+            echo "## Vela ${{ steps.v.outputs.tag }}"
+            echo
+            echo "A small, fast, statically typed language that compiles straight to native"
+            echo "x86-64 executables — no VM, no libc, no linker."
+            echo
+            echo '### Install'
+            echo
+            echo '```console'
+            echo "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/vela-${{ steps.v.outputs.version }}-linux-x86_64.tar.gz | tar xz"
+            echo "cd vela-${{ steps.v.outputs.version }}-linux-x86_64 && ./install.sh ~/.local"
+            echo 'export PATH="$HOME/.local/bin:$PATH" VELA_ROOT="$HOME/.local/lib/vela"'
+            echo 'vela new hello && cd hello && vela run'
+            echo '```'
+            echo
+            echo '### Contents'
+            echo
+            echo '| binary | what it is |'
+            echo '|--------|------------|'
+            echo '| `velac` | the compiler: source to static ELF64, no linker |'
+            echo '| `vela` | the toolchain driver, written in Vela |'
+            echo '| `vela-lsp` | the language server, written in Vela |'
+            echo
+            echo 'The tarball also carries `lib/` (the runtime and standard library, in Vela),'
+            echo '`editor/` (Vim and TextMate grammars), `docs/`, `examples/` and the specification.'
+            echo
+            echo '### Verify'
+            echo
+            echo '```'
+            echo "${{ steps.pkg.outputs.sha }}"
+            echo '```'
+            echo
+            if git describe --tags --abbrev=0 "${{ steps.v.outputs.tag }}^" >/dev/null 2>&1; then
+              PREV=$(git describe --tags --abbrev=0 "${{ steps.v.outputs.tag }}^")
+              echo "### Changes since $PREV"
+              echo
+              git log --no-merges --pretty='- %s' "$PREV..${{ steps.v.outputs.tag }}"
+            fi
+          } > NOTES.md
+          cat NOTES.md
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.v.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "Vela ${{ steps.v.outputs.tag }}" \
+            --notes-file NOTES.md \
+            dist/*.tar.gz dist/*.sha256 || \
+          gh release upload "${{ steps.v.outputs.tag }}" \
+            --repo "${{ github.repository }}" --clobber \
+            dist/*.tar.gz dist/*.sha256

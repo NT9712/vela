@@ -24,6 +24,7 @@ static const char *opt_root = NULL;
 /* ------------------------------------------------------------------ */
 
 static char velaroot[1024];
+static char velalib[1100];      /* directory holding core/ and std/ */
 
 static int file_exists(const char *p) {
     struct stat st;
@@ -102,11 +103,11 @@ Module *load_module(const char *modpath, const char *fromfile, Span sp) {
     } else if (strncmp(modpath, "std/", 4) == 0 || strcmp(modpath, "core") == 0 ||
                strcmp(modpath, "prelude") == 0) {
         if (strcmp(modpath, "core") == 0)
-            snprintf(path, sizeof path, "%s/lib/core/core.vela", velaroot);
+            snprintf(path, sizeof path, "%s/core/core.vela", velalib);
         else if (strcmp(modpath, "prelude") == 0)
-            snprintf(path, sizeof path, "%s/lib/core/prelude.vela", velaroot);
+            snprintf(path, sizeof path, "%s/core/prelude.vela", velalib);
         else
-            snprintf(path, sizeof path, "%s/lib/%s.vela", velaroot, modpath);
+            snprintf(path, sizeof path, "%s/%s.vela", velalib, modpath);
     } else {
         /* package: deps/<pkg>/src/<rest>.vela, searched from each root */
         const char *slash = strchr(modpath, '/');
@@ -224,10 +225,25 @@ static void usage(FILE *o) {
 "  --version        show the version\n");
 }
 
+/* VELA_ROOT may name either the installation root (which contains `lib/`) or
+   the library directory itself (which contains `core/` and `std/`). Accept
+   both, because both are things people reasonably type. */
+static int set_libdir(const char *root) {
+    char probe[1200];
+    snprintf(velalib, sizeof velalib, "%s/lib", root);
+    snprintf(probe, sizeof probe, "%s/core/core.vela", velalib);
+    if (file_exists(probe)) return 1;
+    snprintf(velalib, sizeof velalib, "%s", root);
+    snprintf(probe, sizeof probe, "%s/core/core.vela", velalib);
+    if (file_exists(probe)) return 1;
+    velalib[0] = 0;
+    return 0;
+}
+
 static void discover_root(const char *argv0) {
     const char *env = getenv("VELA_ROOT");
-    if (env && *env) { snprintf(velaroot, sizeof velaroot, "%s", env); return; }
-    if (opt_root) { snprintf(velaroot, sizeof velaroot, "%s", opt_root); return; }
+    if (opt_root) { snprintf(velaroot, sizeof velaroot, "%s", opt_root); set_libdir(velaroot); return; }
+    if (env && *env) { snprintf(velaroot, sizeof velaroot, "%s", env); set_libdir(velaroot); return; }
     /* <dir of argv0>/.. */
     char exe[1024];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
@@ -237,14 +253,17 @@ static void discover_root(const char *argv0) {
         dirname_of(exe, dir, sizeof dir);
         snprintf(velaroot, sizeof velaroot, "%s/..", dir);
         normalize(velaroot);
-        char probe[1200];
-        snprintf(probe, sizeof probe, "%s/lib/core/core.vela", velaroot);
-        if (file_exists(probe)) return;
+        if (set_libdir(velaroot)) return;
+        /* an installed layout: <prefix>/bin/velac with <prefix>/lib/vela */
+        snprintf(velaroot, sizeof velaroot, "%s/../lib/vela", dir);
+        normalize(velaroot);
+        if (set_libdir(velaroot)) return;
     }
     char dir[1024];
     dirname_of(argv0, dir, sizeof dir);
     snprintf(velaroot, sizeof velaroot, "%s/..", dir);
     normalize(velaroot);
+    set_libdir(velaroot);
 }
 
 int main(int argc, char **argv) {
@@ -282,16 +301,13 @@ int main(int argc, char **argv) {
     if (!file_exists(input)) { fprintf(stderr, "velac: cannot open `%s`\n", input); return 2; }
 
     discover_root(argv[0]);
-    {
-        char probe[1200];
-        snprintf(probe, sizeof probe, "%s/lib/core/core.vela", velaroot);
-        if (!file_exists(probe)) {
-            fprintf(stderr,
-                "velac: cannot find the Vela standard library.\n"
-                "       looked in `%s/lib`.\n"
-                "       set VELA_ROOT or pass --root <install dir>.\n", velaroot);
-            return 2;
-        }
+    if (!velalib[0]) {
+        fprintf(stderr,
+            "velac: cannot find the Vela standard library.\n"
+            "       looked for `core/core.vela` under `%s` and `%s/lib`.\n"
+            "       set VELA_ROOT to the directory holding `core/` and `std/`,\n"
+            "       or pass --root <dir>.\n", velaroot, velaroot);
+        return 2;
     }
     g_unit.stdroot = intern(velaroot);
     /* default dependency root: ./deps relative to the entry file */

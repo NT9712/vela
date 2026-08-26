@@ -18,7 +18,10 @@ VELAC   := bin/velac
 LIBS    := $(wildcard lib/core/*.vela lib/std/*.vela)
 TOOLS   := $(wildcard tools/*.vela)
 
-.PHONY: all test bench install uninstall clean fmt check
+VERSION ?= 1.0.0
+DISTNAME := vela-$(VERSION)-linux-x86_64
+
+.PHONY: all test bench install uninstall clean fmt check dist
 
 all: $(VELAC) bin/vela bin/vela-lsp
 
@@ -57,14 +60,42 @@ install: all
 	install -d $(DESTDIR)$(PREFIX)/lib/vela
 	cp -r lib/core lib/std $(DESTDIR)$(PREFIX)/lib/vela/
 	@echo
-	@echo "installed. add to your shell profile:"
-	@echo "    export VELA_ROOT=$(PREFIX)/lib/vela"
+	@echo "installed to $(PREFIX)."
+	@echo "velac finds the library next to itself, so nothing else is needed."
+	@echo "if you move the binaries, set: export VELA_ROOT=$(PREFIX)/lib/vela"
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/velac $(DESTDIR)$(PREFIX)/bin/vela \
 	      $(DESTDIR)$(PREFIX)/bin/vela-lsp
 	rm -rf $(DESTDIR)$(PREFIX)/lib/vela
 
+dist: all
+	rm -rf dist/$(DISTNAME)
+	mkdir -p dist/$(DISTNAME)/bin dist/$(DISTNAME)/lib
+	cp bin/velac bin/vela bin/vela-lsp        dist/$(DISTNAME)/bin/
+	cp -r lib/core lib/std                    dist/$(DISTNAME)/lib/
+	cp -r editor docs examples spec           dist/$(DISTNAME)/
+	cp README.md LICENSE                      dist/$(DISTNAME)/
+	rm -rf dist/$(DISTNAME)/examples/todo/deps dist/$(DISTNAME)/examples/todo/build
+	printf '%s\n' \
+	  '#!/usr/bin/env sh' \
+	  '# install.sh [prefix]   default prefix: /usr/local' \
+	  'set -eu' \
+	  'P="$${1:-/usr/local}"' \
+	  'mkdir -p "$$P/bin" "$$P/lib/vela"' \
+	  'cp bin/velac bin/vela bin/vela-lsp "$$P/bin/"' \
+	  'cp -r lib/core lib/std "$$P/lib/vela/"' \
+	  'echo' \
+	  'echo "installed to $$P"' \
+	  'echo' \
+	  'echo "  export PATH=\"$$P/bin:\$$PATH\""' \
+	  'echo "  export VELA_ROOT=\"$$P/lib/vela\""' \
+	  > dist/$(DISTNAME)/install.sh
+	chmod +x dist/$(DISTNAME)/install.sh
+	cd dist && tar czf $(DISTNAME).tar.gz $(DISTNAME)
+	@echo
+	@ls -lh dist/$(DISTNAME).tar.gz
+
 clean:
 	rm -f bootstrap/src/*.o bin/velac bin/vela bin/vela-lsp
-	rm -rf build examples/todo/build examples/todo/store/build
+	rm -rf build dist examples/todo/build examples/todo/store/build

@@ -1,5 +1,23 @@
 # Getting started
 
+## Install a release
+
+The quickest way in — no compiler needed:
+
+```console
+$ curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.0.0-linux-x86_64.tar.gz | tar xz
+$ cd vela-1.0.0-linux-x86_64
+$ ./install.sh ~/.local
+$ export PATH="$HOME/.local/bin:$PATH"
+$ vela version
+vela 1.0.0
+```
+
+`velac` finds its standard library next to itself, so no environment variable is
+needed unless you move the binaries apart from `lib/vela`.
+
+To build from source instead, read on.
+
 ## Requirements
 
 * Linux on x86-64
@@ -33,7 +51,9 @@ vela 1.0.0
 ```
 
 `VELA_ROOT` is only needed if you move the binaries away from the checkout;
-`velac` otherwise finds `lib/` relative to its own location.
+`velac` otherwise finds the library relative to its own location. It accepts
+either the installation root (containing `lib/`) or the library directory itself
+(containing `core/` and `std/`).
 
 ## Your first project
 

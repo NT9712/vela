@@ -49,11 +49,19 @@ Vela's bet is that a language can be both if it stays small:
 
 ## Install
 
-Vela needs a C compiler to build the bootstrap compiler once. After that, the
-toolchain is Vela all the way down.
+```console
+$ curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.0.0-linux-x86_64.tar.gz | tar xz
+$ cd vela-1.0.0-linux-x86_64 && ./install.sh ~/.local
+$ export PATH="$HOME/.local/bin:$PATH"
+$ vela version
+vela 1.0.0
+```
+
+Or build from source — Vela needs a C compiler once, for the bootstrap
+compiler. After that the toolchain is Vela all the way down.
 
 ```console
-$ git clone <repo> vela && cd vela
+$ git clone https://github.com/NT9712/vela && cd vela
 $ make
 $ export PATH="$PWD/bin:$PATH"
 $ export VELA_ROOT="$PWD"

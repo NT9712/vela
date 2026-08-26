@@ -218,6 +218,26 @@ fmt_tests() {
 
 # ------------------------------------------------------------------ fuzzing
 
+dist_tests() {
+  echo "release packaging"
+  make -C "$ROOT" dist VERSION=test >/dev/null 2>&1 || { bad "make dist"; return; }
+  local tb="$ROOT/dist/vela-test-linux-x86_64.tar.gz"
+  [ -f "$tb" ] || { bad "make dist" "no tarball produced"; return; }
+  ok "tarball built ($(du -h "$tb" | cut -f1))"
+  rm -rf "$TMP/rel" && mkdir -p "$TMP/rel" && tar xzf "$tb" -C "$TMP/rel"
+  ( cd "$TMP/rel/vela-test-linux-x86_64" && ./install.sh "$TMP/rel/prefix" >/dev/null ) \
+    || { bad "install.sh"; return; }
+  # the installed toolchain must work with no environment at all
+  local out
+  out="$(cd "$TMP/rel" && env -u VELA_ROOT PATH="$TMP/rel/prefix/bin:/usr/bin:/bin" \
+        sh -c 'vela new d >/dev/null && cd d && vela run && vela test' 2>&1)"
+  case "$out" in
+    *"hello from d"*"1 passed"*) ok "installed toolchain works with no VELA_ROOT";;
+    *) bad "installed toolchain" "$out";;
+  esac
+  rm -rf "$ROOT/dist"
+}
+
 regress_tests() {
   echo "regression corpus"
   local n=0 bad_any=0
@@ -325,6 +345,7 @@ what="${1:-all}"
 case "$what" in
   run)  run_tests ;;
   regress) regress_tests ;;
+  dist) dist_tests ;;
   fail) fail_tests ;;
   unit) unit_tests ;;
   cli)  cli_tests ;;
@@ -332,7 +353,7 @@ case "$what" in
   fmt)  fmt_tests ;;
   selfcheck) selfcheck_tests ;;
   fuzz) fuzz_tests ;;
-  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; regress_tests; fuzz_tests ;;
+  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; dist_tests; regress_tests; fuzz_tests ;;
 esac
 
 echo
