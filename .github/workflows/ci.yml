@@ -27,6 +27,12 @@ jobs:
       - name: formatter is clean
         run: make check
 
+      - name: documentation site
+        run: |
+          make site
+          test -s site/public/index.html
+          test -s site/public/style.css
+
       - name: benchmarks
         run: ./bench/run.sh
 

@@ -1,0 +1,49 @@
+use std/io
+use std/fs
+
+struct User {
+    name: Str,
+    age: Int,
+}
+
+enum Shape {
+    Circle(Float),
+    Rect(Float, Float),
+    Empty,
+}
+
+fn area(s: Shape) -> Float {
+    return match s {
+        Shape.Circle(r) => 3.14159 * r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Empty => 0.0,
+    }
+}
+
+fn load(path: Str) -> !Str {
+    let text = fs.read_file(path)?          // `?` propagates the error
+    if len(text) == 0 {
+        return err("{path} is empty")
+    }
+    return ok(text)
+}
+
+fn largest[T](xs: [T]) -> ?T {              // generics, monomorphised
+    if len(xs) == 0 {
+        return nil
+    }
+    let mut best = xs[0]
+    for x in xs {
+        if x > best {
+            best = x
+        }
+    }
+    return best
+}
+
+fn report(users: [User]) {
+    let names = users.map(|u| u.name)       // closures, inference
+    let oldest = largest(users.map(|u| u.age)) ?? 0
+    io.println("{names.join(", ")} — oldest {oldest}")
+    io.println("a circle of radius 2 covers {area(Shape.Circle(2.0))}")
+}

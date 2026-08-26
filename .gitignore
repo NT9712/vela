@@ -5,3 +5,6 @@ a.out
 vela.lock
 examples/todo/deps/
 dist/
+site/public/
+site/build
+site/.vercel/

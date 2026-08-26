@@ -218,6 +218,33 @@ fmt_tests() {
 
 # ------------------------------------------------------------------ fuzzing
 
+site_tests() {
+  echo "documentation site"
+  "$VELAC" -q --no-color -o "$TMP/sitebuild" "$ROOT/site/build.vela" 2>"$TMP/sb.err" \
+    || { bad "site generator compiles" "$(head -8 "$TMP/sb.err")"; return; }
+  ok "site generator compiles"
+  for f in "$ROOT"/site/snippets/*.vela; do
+    "$VELAC" -q --no-color --check "$f" >"$TMP/sn.err" 2>&1 \
+      || { bad "snippet $(basename "$f")" "$(head -6 "$TMP/sn.err")"; return; }
+  done
+  ok "homepage code samples are valid Vela"
+  ( cd "$ROOT" && "$TMP/sitebuild" . >"$TMP/site.log" 2>&1 ) \
+    || { bad "site builds" "$(head -8 "$TMP/site.log")"; return; }
+  local n
+  n=$(ls "$ROOT"/site/public/*.html 2>/dev/null | wc -l)
+  [ "$n" -ge 10 ] && ok "$n pages generated" || bad "site pages" "only $n"
+  # every internal link must point at a page that exists
+  local missing=""
+  for l in $(grep -ho 'href="/[^"#]*"' "$ROOT"/site/public/*.html | sed 's/href="//; s/"//' | sort -u); do
+    case "$l" in
+      /) continue;;
+      /style.css) [ -f "$ROOT/site/public/style.css" ] || missing="$missing $l";;
+      *) [ -f "$ROOT/site/public${l}.html" ] || missing="$missing $l";;
+    esac
+  done
+  [ -z "$missing" ] && ok "every internal link resolves" || bad "dead links" "$missing"
+}
+
 dist_tests() {
   echo "release packaging"
   make -C "$ROOT" dist VERSION=test >/dev/null 2>&1 || { bad "make dist"; return; }
@@ -346,6 +373,7 @@ case "$what" in
   run)  run_tests ;;
   regress) regress_tests ;;
   dist) dist_tests ;;
+  site) site_tests ;;
   fail) fail_tests ;;
   unit) unit_tests ;;
   cli)  cli_tests ;;
@@ -353,7 +381,7 @@ case "$what" in
   fmt)  fmt_tests ;;
   selfcheck) selfcheck_tests ;;
   fuzz) fuzz_tests ;;
-  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; dist_tests; regress_tests; fuzz_tests ;;
+  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; site_tests; dist_tests; regress_tests; fuzz_tests ;;
 esac
 
 echo

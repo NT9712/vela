@@ -1,0 +1,8 @@
+error: cannot add `Str` and `Int`
+  --> demo.vela:8:18
+   |
+ 8 |     let result = name + age
+   |                  ^^^^^^^^^^
+   = note: expected `Str + Str`
+   = note: found    `Str + Int`
+   = note: help: convert the right side with `str(x)`

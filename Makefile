@@ -21,7 +21,7 @@ TOOLS   := $(wildcard tools/*.vela)
 VERSION ?= 1.0.0
 DISTNAME := vela-$(VERSION)-linux-x86_64
 
-.PHONY: all test bench install uninstall clean fmt check dist
+.PHONY: all test bench install uninstall clean fmt check dist site site-deploy
 
 all: $(VELAC) bin/vela bin/vela-lsp
 
@@ -69,6 +69,15 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/vela-lsp
 	rm -rf $(DESTDIR)$(PREFIX)/lib/vela
 
+site: all
+	VELA_ROOT=$(CURDIR) $(VELAC) -q -o site/build site/build.vela
+	./site/build .
+	@echo
+	@du -sh site/public
+
+site-deploy: site
+	cd site && vercel deploy --prod --yes
+
 dist: all
 	rm -rf dist/$(DISTNAME)
 	mkdir -p dist/$(DISTNAME)/bin dist/$(DISTNAME)/lib
@@ -97,5 +106,5 @@ dist: all
 	@ls -lh dist/$(DISTNAME).tar.gz
 
 clean:
-	rm -f bootstrap/src/*.o bin/velac bin/vela bin/vela-lsp
-	rm -rf build dist examples/todo/build examples/todo/store/build
+	rm -f bootstrap/src/*.o bin/velac bin/vela bin/vela-lsp site/build
+	rm -rf build dist site/public examples/todo/build examples/todo/store/build

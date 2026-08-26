@@ -57,13 +57,19 @@ pub fn tokenize(src: Str) -> ![Token] {
             lx.bump()
             let mut blanks = 0
             while true {
-                let save = lx.i
+                // `skip_spaces` moves the cursor, so the whole position has to
+                // be restored when the next line turns out not to be blank.
+                let save_i = lx.i
+                let save_line = lx.line
+                let save_col = lx.col
                 lx.skip_spaces()
                 if lx.i < lx.n and lx.src[lx.i] == '\n' {
                     lx.bump()
                     blanks += 1
                 } else {
-                    lx.i = save
+                    lx.i = save_i
+                    lx.line = save_line
+                    lx.col = save_col
                     break
                 }
             }

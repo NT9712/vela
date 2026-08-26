@@ -1,6 +1,6 @@
 # Vela
 
-**A small, fast, statically typed language that compiles straight to native
+**[vela-lang.vercel.app](https://vela-lang.vercel.app)** · **A small, fast, statically typed language that compiles straight to native
 x86-64 executables — no VM, no libc, no linker, no runtime dependencies.**
 
 ```vela
@@ -163,6 +163,9 @@ fn main() -> !Void {
 ---
 
 ## Documentation
+
+Read it on the web at **[vela-lang.vercel.app](https://vela-lang.vercel.app)**,
+or in the repository:
 
 | document | what it covers |
 |----------|----------------|
