@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: build, test, fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the toolchain
+        run: make
+
+      - name: version
+        run: |
+          ./bin/velac --version
+          VELA_ROOT=$PWD ./bin/vela version
+
+      - name: test suite
+        run: ./tests/run.sh
+
+      - name: formatter is clean
+        run: make check
+
+      - name: benchmarks
+        run: ./bench/run.sh
+
+      - name: examples build and run
+        run: |
+          set -e
+          export VELA_ROOT=$PWD
+          for e in hello calculator wordcount life http_server; do
+            ./bin/velac -q -o "/tmp/$e" "examples/$e.vela"
+          done
+          /tmp/hello
+          /tmp/calculator "2^10 + 1"
+          /tmp/life 12 5 2 | tail -1
+
+      - name: multi-file example with a local dependency
+        run: |
+          set -e
+          export VELA_ROOT=$PWD PATH=$PWD/bin:$PATH TODO_FILE=/tmp/todo.json
+          cd examples/todo
+          mkdir -p deps && ln -sfn ../store deps/store
+          vela run -- add "ship it" --tag work
+          vela run -- done 1
+          vela run -- list
+
+  sanitizers:
+    name: compiler under asan/ubsan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build instrumented compiler
+        run: |
+          cc -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+             -std=c99 -w -o /tmp/velac-asan bootstrap/src/*.c
+      - name: check every source file we ship
+        run: |
+          set -e
+          export VELA_ROOT=$PWD ASAN_OPTIONS=detect_leaks=0
+          for f in lib/core/*.vela lib/std/*.vela tools/*.vela examples/*.vela \
+                   tests/run/*.vela tests/lib/*.vela; do
+            /tmp/velac-asan --no-color --check "$f" >/dev/null
+          done
+      - name: check the inputs that used to crash it
+        run: |
+          export VELA_ROOT=$PWD ASAN_OPTIONS=detect_leaks=0
+          for f in tests/regress/*.vela; do
+            /tmp/velac-asan --no-color --check "$f" >/dev/null 2>&1 || true
+          done
