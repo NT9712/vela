@@ -15,19 +15,29 @@ fn main() {
     for s in [Shape.Circle(2.0), Shape.Rect(3.0, 4.0), Shape.Empty] {
         println(describe(s))
     }
-    for n in [1, 50, 500] { println(size(n)) }
+    for n in [1, 50, 500] {
+        println(size(n))
+    }
     println(bind(7))
-    let a: ?Int = nil
-    let b: ?Int = 3
+    let a: ? Int = nil
+    let b: ? Int = 3
     println(opt(a))
     println(opt(b))
     println(res(ok(5)))
     println(res(err("oops")))
     let p = Point{ x: 1, y: 2 }
-    println(match p { Point{ x: a, y: b } => "struct {a} {b}" })
+    println(match p{Point{ x: a, y: b } => "struct {a} {b}" })
 }
-struct Point { x: Int, y: Int }
-enum Shape { Circle(Float), Rect(Float, Float), Empty }
+struct Point {
+    x: Int,
+    y: Int,
+}
+enum Shape {
+    Circle(Float),
+    Rect(Float,
+    Float),
+    Empty,
+}
 fn describe(s: Shape) -> Str {
     return match s {
         Shape.Circle(r) => "circle {r}",
@@ -43,11 +53,19 @@ fn size(n: Int) -> Str {
     }
 }
 fn bind(n: Int) -> Str {
-    return match n { v => "bound {v}" }
+    return match n {
+        v => "bound {v}",
+    }
 }
-fn opt(o: ?Int) -> Str {
-    return match o { nil => "nil-case", some(v) => "some {v}" }
+fn opt(o: ? Int) -> Str {
+    return match o {
+        nil => "nil-case",
+        some(v) => "some {v}",
+    }
 }
 fn res(r: !Int) -> Str {
-    return match r { ok(v) => "ok {v}", err(e) => "err {e.msg}" }
+    return match r {
+        ok(v) => "ok {v}",
+        err(e) => "err {e.msg}",
+    }
 }

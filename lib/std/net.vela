@@ -37,7 +37,7 @@ fn sockaddr(ip: Int, port: Int) -> Int {
 }
 
 /// Parse dotted-quad IPv4 into the network-order word the kernel expects.
-pub fn parse_ip(s: Str) -> ?Int {
+pub fn parse_ip(s: Str) -> ? Int {
     let parts = s.split(".")
     if len(parts) != 4 {
         return nil
@@ -66,7 +66,7 @@ pub fn connect(host: Str, port: Int) -> !Conn {
         @syscall(SYS_CLOSE, fd)
         return err("cannot connect to {host}:{port}")
     }
-    return ok(Conn{ fd: fd })
+    return ok(Conn{fd: fd })
 }
 
 /// Listen on `port` for incoming connections.
@@ -95,7 +95,7 @@ pub fn Listener.accept(self) -> !Conn {
     if fd < 0 {
         return err("accept failed")
     }
-    return ok(Conn{ fd: fd })
+    return ok(Conn{fd: fd })
 }
 
 /// Stop listening.

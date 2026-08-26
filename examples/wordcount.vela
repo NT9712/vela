@@ -15,8 +15,8 @@ struct Count {
 }
 
 /// Count word frequencies in `text`, case-insensitively.
-pub fn frequencies(text: Str) -> {Str: Int} {
-    let counts: {Str: Int} = {:}
+pub fn frequencies(text: Str) -> {Str: Int } {
+    let counts: {Str: Int } = {:}
     for w in text.lower().words() {
         let clean = strip_punct(w)
         if len(clean) == 0 {
@@ -40,18 +40,12 @@ fn strip_punct(w: Str) -> Str {
 }
 
 /// The `n` most frequent entries, ties broken alphabetically.
-pub fn top(counts: {Str: Int}, n: Int) -> [Count] {
+pub fn top(counts: {Str: Int }, n: Int) -> [Count] {
     let all: [Count] = []
     for w, c in counts {
         all.push(Count{ word: w, n: c })
     }
-    sort.by(all, |a: Count, b: Count| {
-        if a.n != b.n {
-            a.n > b.n
-        } else {
-            a.word < b.word
-        }
-    })
+    sort.by(all, | a: Count, b: Count | { if a.n != b.n{ a.n > b.n } else { a.word < b.word } })
     if len(all) <= n {
         return all
     }
@@ -61,9 +55,7 @@ pub fn top(counts: {Str: Int}, n: Int) -> [Count] {
 fn report(name: Str, text: Str) {
     let lines = text.lines()
     let words = text.words()
-    io.println("{fmt.pad_right(name, 24)} {fmt.pad_left(str(len(lines)), 8)} lines" +
-               " {fmt.pad_left(str(len(words)), 8)} words" +
-               " {fmt.pad_left(fmt.bytes(len(text)), 10)}")
+    io.println("{fmt.pad_right(name, 24)} {fmt.pad_left(str(len(lines)), 8)} lines" + " {fmt.pad_left(str(len(words)), 8)} words" + " {fmt.pad_left(fmt.bytes(len(text)), 10)}")
     let rows: [[Str]] = [["word", "count"]]
     for c in top(frequencies(text), 8) {
         rows.push([c.word, str(c.n)])

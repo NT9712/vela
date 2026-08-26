@@ -2,17 +2,17 @@
 
 /// Sort a list of integers ascending, in place.
 pub fn ints(xs: [Int]) {
-    xs.sort_by(|a: Int, b: Int| a < b)
+    xs.sort_by(| a: Int, b: Int | a < b)
 }
 
 /// Sort a list of floats ascending, in place.
 pub fn floats(xs: [Float]) {
-    xs.sort_by(|a: Float, b: Float| a < b)
+    xs.sort_by(| a: Float, b: Float | a < b)
 }
 
 /// Sort a list of strings ascending, in place.
 pub fn strs(xs: [Str]) {
-    xs.sort_by(|a: Str, b: Str| a < b)
+    xs.sort_by(| a: Str, b: Str | a < b)
 }
 
 /// Sort with a custom ordering, in place.

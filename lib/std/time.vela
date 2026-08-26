@@ -71,8 +71,7 @@ pub fn utc(secs: Int) -> DateTime {
         days -= dm
         month += 1
     }
-    return DateTime{ year: year, month: month, day: days + 1,
-                     hour: hour, minute: minute, second: second }
+    return DateTime{ year: year, month: month, day: days + 1, hour: hour, minute: minute, second: second }
 }
 
 /// The current UTC date and time.
@@ -121,7 +120,7 @@ fn pad2(n: Int) -> Str {
 /// ISO 8601, e.g. `2026-08-25T22:19:21Z`.
 pub fn DateTime.to_str(self) -> Str {
     return "{self.year}-{pad2(self.month)}-{pad2(self.day)}T" +
-           "{pad2(self.hour)}:{pad2(self.minute)}:{pad2(self.second)}Z"
+        "{pad2(self.hour)}:{pad2(self.minute)}:{pad2(self.second)}Z"
 }
 
 /// Format a nanosecond duration in human units.

@@ -25,12 +25,13 @@ struct F {
     indent: Int,
     pending_blank: Bool,
     prev: Str,
+    cont: Int,
 }
 
 /// Format Vela source text.
 pub fn format(src: Str) -> !Str {
     let toks = lex.tokenize(src)?
-    let f = F{ toks: toks, i: 0, out: "", line: "", indent: 0, pending_blank: false, prev: "" }
+    let f = F{ toks: toks, i: 0, out: "", line: "", indent: 0, pending_blank: false, prev: "", cont: 0 }
     f.skip_newlines_leading()
     while not f.at_eof() {
         f.decl()
@@ -82,7 +83,7 @@ fn F.adv(self) -> lex.Token {
 fn F.type_brace(self) -> Bool {
     let p = self.prev
     return p == "->" or p == ":" or p == "," or p == "[" or p == "(" or
-           p == "{{" or p == "?" or p == "!" or p == "="
+        p == "{{" or p == "?" or p == "!" or p == "="
 }
 
 /// Consume a balanced `{ ... }` as part of a type.
@@ -138,10 +139,16 @@ fn F.flush(self) {
         if self.pending_blank and len(self.out) > 0 {
             self.out = self.out + "\n"
         }
-        self.out = self.out + "    ".repeat(self.indent) + t + "\n"
+        self.out = self.out + "    ".repeat(self.indent + self.cont) + t + "\n"
         self.pending_blank = false
     }
     self.line = ""
+}
+
+/// End a continuation line: the rest of the statement is indented one level.
+fn F.wrap(self) {
+    self.flush()
+    self.cont = 1
 }
 
 fn rstrip(s: Str) -> Str {
@@ -152,9 +159,10 @@ fn rstrip(s: Str) -> Str {
     return s[0..n]
 }
 
-/// End the current line and remember whether a blank line should follow.
+/// End the current statement.
 fn F.newline(self) {
     self.flush()
+    self.cont = 0
 }
 
 fn F.blank(self) {
@@ -271,7 +279,9 @@ fn F.use_decl(self) {
         }
         let t = self.adv()
         if t.is_punct("/") or t.is_punct(".") {
-            self.line = rstrip(self.line)
+            if not self.line.ends_with("use ") {
+                self.line = rstrip(self.line)
+            }
             self.emit(t.text())
             continue
         }
@@ -282,7 +292,7 @@ fn F.use_decl(self) {
             continue
         }
         if not ends_with_open(self.line) and not self.line.ends_with("/") and
-           not self.line.ends_with(".") {
+            not self.line.ends_with(".") {
             self.emit_space()
         }
         self.emit(t.text())
@@ -290,11 +300,28 @@ fn F.use_decl(self) {
     self.newline()
 }
 
-/// A declaration that occupies a single logical line (`const`, `type`).
+/// A declaration that occupies one logical line (`const`, `type`). The line may
+/// span several source lines while a bracket is still open.
 fn F.simple_line(self) {
-    while not self.at_eof() and not self.cur().is_newline() {
+    let mut depth = 0
+    while not self.at_eof() {
+        let t = self.cur()
+        if t.is_newline() {
+            if depth == 0 {
+                break
+            }
+            self.adv()
+            continue
+        }
         if self.take_comments_inline() {
             continue
+        }
+        if t.is_punct("(") or t.is_punct("[") or (t.is_punct("{{") and depth > 0) {
+            depth += 1
+        } else if t.is_punct("{{") and self.type_brace() {
+            depth += 1
+        } else if t.is_punct(")") or t.is_punct("]") or t.is_punct("}}") {
+            depth -= 1
         }
         self.expr_token(0)
     }
@@ -326,7 +353,7 @@ fn F.fn_decl(self) {
 }
 
 fn F.type_decl(self) {
-    self.emit(self.adv().text())          // struct / enum
+    self.emit(self.adv().text()) // struct / enum
     self.emit_space()
     while not self.at_eof() and not self.cur().is_punct("{{") {
         if self.cur().is_newline() {
@@ -348,7 +375,7 @@ fn F.type_decl(self) {
         }
         // one member per line, always comma-terminated
         while not self.at_eof() and not self.cur().is_newline() and
-              not self.cur().is_punct("}}") {
+            not self.cur().is_punct("}}") {
             if self.cur().is_punct(",") {
                 self.adv()
                 break
@@ -363,8 +390,7 @@ fn F.type_decl(self) {
             self.expr_token(0)
         }
         self.emit(",")
-        while self.take_comments_inline() {
-        }
+        while self.take_comments_inline() {}
         self.newline()
         self.eat_newlines()
     }
@@ -380,9 +406,6 @@ fn F.type_decl(self) {
 
 fn F.block(self) {
     self.emit("{{")
-    if not self.cur().is_punct("{{") {
-        // defensive: caller guaranteed a `{`
-    }
     self.adv()
     // empty block?
     let nxt = self.next_significant(self.i)
@@ -459,8 +482,7 @@ fn F.after_stmt(self) {
     while self.cur().is_punct(";") {
         self.adv()
     }
-    while self.take_comments_inline() {
-    }
+    while self.take_comments_inline() {}
     self.newline()
 }
 
@@ -537,8 +559,7 @@ fn F.match_expr(self) {
             self.adv()
         }
         self.emit(",")
-        while self.take_comments_inline() {
-        }
+        while self.take_comments_inline() {}
         self.newline()
         self.eat_newlines()
     }
@@ -565,7 +586,12 @@ fn F.expr2(self, no_struct: Bool, stop_comma: Bool) {
         let t = self.cur()
         if t.is_newline() {
             if depth == 0 {
-                return
+                if not continues(self.prev) {
+                    return
+                }
+                self.adv()
+                self.wrap()
+                continue
             }
             self.adv()
             continue
@@ -627,8 +653,7 @@ fn F.prev_is_operand(self) -> Bool {
     }
     if c.is_alnum() or c == '_' {
         // keywords that are not operands
-        let words = ["return", "and", "or", "not", "in", "if", "while", "for",
-                     "match", "let", "mut", "else", "as", "const", "use"]
+        let words = ["return", "and", "or", "not", "in", "if", "while", "for", "match", "let", "mut", "else", "as", "const", "use"]
         let mut j = len(s)
         while j > 0 and (s[j - 1].is_alnum() or s[j - 1] == '_') {
             j -= 1
@@ -638,9 +663,7 @@ fn F.prev_is_operand(self) -> Bool {
     return false
 }
 
-const BINARY_OPS: [Str] = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">",
-    ">=", "<<", ">>", "&", "^", "=", "+=", "-=", "*=", "/=", "%=", "->", "=>",
-    "??"]
+const BINARY_OPS: [Str] = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "<<", ">>", "&", "^", "=", "+=", "-=", "*=", "/=", "%=", "->", "=>", "??"]
 
 fn F.expr_token(self, _depth: Int) {
     let t = self.adv()
@@ -672,13 +695,27 @@ fn F.expr_token(self, _depth: Int) {
     }
     if t.is_punct("{{") {
         if len(rstrip(self.line)) > 0 and not ends_with_open(self.line) and
-           not self.prev_is_operand() {
+            not self.prev_is_operand() {
             self.emit_space()
         }
         self.emit("{{")
+        // `Point{ x: 1 }` reads better than `Point{x: 1}`; map *types* like
+        // `{Str: Int}` stay tight.
+        let nx = self.cur()
+        if not nx.is_punct("}}") and not nx.is_punct(":") and not is_type_brace_content(self.toks, self.i) {
+            self.emit_space()
+        }
         return
     }
-    if t.is_punct(")") or t.is_punct("]") or t.is_punct("}}") {
+    if t.is_punct("}}") {
+        self.line = rstrip(self.line)
+        if not self.line.ends_with("{{") and not self.line.ends_with(":") {
+            self.emit_space()
+        }
+        self.emit("}}")
+        return
+    }
+    if t.is_punct(")") or t.is_punct("]") {
         self.line = rstrip(self.line)
         self.emit(txt)
         return
@@ -742,9 +779,44 @@ fn F.expr_token(self, _depth: Int) {
     self.maybe_space_before()
     self.emit(txt)
     if t.is_kw("let") or t.is_kw("mut") or t.is_kw("return") or t.is_kw("use") or
-       t.is_kw("const") or t.is_kw("pub") or t.is_kw("type") {
+        t.is_kw("const") or t.is_kw("pub") or t.is_kw("type") {
         self.emit_space()
     }
+}
+
+/// True when a line ending in `p` is continued on the next line.
+fn continues(p: Str) -> Bool {
+    if len(p) == 0 {
+        return false
+    }
+    let ops = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "<<", ">>", "&", "^", "|", "=", "+=", "-=", "*=", "/=", "%=", "->", "=>", "??", ",", "and", "or", "not", "(", "[", ":"]
+    return ops.contains(p)
+}
+
+/// A `{` that begins a map *type* is followed by `Type : Type }` with no comma.
+fn is_type_brace_content(toks: [lex.Token], i: Int) -> Bool {
+    let mut j = i
+    let mut depth = 0
+    while j < len(toks) {
+        let t = toks[j]
+        if t.is_eof() or t.is_newline() {
+            return false
+        }
+        if t.is_punct("{{") or t.is_punct("[") or t.is_punct("(") {
+            depth += 1
+        } else if t.is_punct("}}") {
+            if depth == 0 {
+                return true
+            }
+            depth -= 1
+        } else if t.is_punct("]") or t.is_punct(")") {
+            depth -= 1
+        } else if depth == 0 and (t.is_punct(",") or t.is_punct("=")) {
+            return false
+        }
+        j += 1
+    }
+    return false
 }
 
 fn ends_with_open(s: Str) -> Bool {
@@ -753,7 +825,7 @@ fn ends_with_open(s: Str) -> Bool {
     }
     let c = s[len(s) - 1]
     return c == '(' or c == '[' or c == '{' or c == '.' or c == '@' or
-           c == '~' or c == '!' or c == ' '
+        c == '~' or c == '!' or c == ' '
 }
 
 fn F.maybe_space_before(self) {

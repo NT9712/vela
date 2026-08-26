@@ -19,25 +19,40 @@ fn main() {
     println("{xs} {len(xs)} {xs[1]}")
     let m = { "a": 1, "b": 2 }
     let ks = m.keys()
-    ks.sort_by(|a, b| a < b)
+    ks.sort_by(| a, b | a < b)
     println("{ks} {len(m)} {m.has("a")}")
     println("{Point{ x: 1.0, y: 2.0 }}")
     println("{Color.Green} {Shape.Rect(2.0, 3.0)}")
-    let a: ?Int = nil
-    let b: ?Int = 5
+    let a: ? Int = nil
+    let b: ? Int = 5
     println("{a} {b ?? 0} {(a ?? 7)}")
     println("{ok(9)} {err("boom")}")
     println("{sum(10)} {fact(5)}")
 }
-struct Point { x: Float, y: Float }
-enum Color { Red, Green, Blue }
-enum Shape { Circle(Float), Rect(Float, Float) }
+struct Point {
+    x: Float,
+    y: Float,
+}
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+enum Shape {
+    Circle(Float),
+    Rect(Float,
+    Float),
+}
 fn sum(n: Int) -> Int {
     let mut t = 0
-    for i in 1..=n { t += i }
+    for i in 1..= n {
+        t += i
+    }
     return t
 }
 fn fact(n: Int) -> Int {
-    if n <= 1 { return 1 }
+    if n <= 1 {
+        return 1
+    }
     return n * fact(n - 1)
 }

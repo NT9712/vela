@@ -17,14 +17,14 @@ test "list methods" {
     assert(not xs.contains(9))
     xs.push(4)
     assert_eq(xs.pop(), 4)
-    assert_eq(xs.map(|v| v * 2), [6, 2, 4])
-    assert_eq(xs.filter(|v| v > 1), [3, 2])
-    assert_eq(xs.fold(0, |a, b| a + b), 6)
+    assert_eq(xs.map(| v | v * 2), [6, 2, 4])
+    assert_eq(xs.filter(| v | v > 1), [3, 2])
+    assert_eq(xs.fold(0, | a, b | a + b), 6)
     assert_eq(xs.join("-"), "3-1-2")
     xs.reverse()
     assert_eq(xs, [2, 1, 3])
-    assert(xs.any(|v| v == 3))
-    assert(xs.all(|v| v > 0))
+    assert(xs.any(| v | v == 3))
+    assert(xs.all(| v | v > 0))
     assert_eq(xs.first() ?? 0, 2)
     assert_eq(xs.last() ?? 0, 3)
     let ys = xs.copy()
@@ -124,7 +124,7 @@ test "sort" {
     let ss = ["pear", "apple"]
     sort.strs(ss)
     assert_eq(ss, ["apple", "pear"])
-    assert(sort.is_sorted(xs, |a: Int, b: Int| a < b))
+    assert(sort.is_sorted(xs, | a: Int, b: Int | a < b))
 }
 
 test "json round trip" {

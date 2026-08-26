@@ -7,16 +7,16 @@
 
 pub enum Tok {
     Eof,
-    Newline(Int),      // payload: number of *blank* lines that followed
+    Newline(Int), // payload: number of *blank* lines that followed
     Ident(Str),
     Keyword(Str),
     Int(Str),
     Float(Str),
-    Str(Str),          // raw source text including quotes
+    Str(Str), // raw source text including quotes
     Char(Str),
     Punct(Str),
     Doc(Str),
-    Comment(Str),      // `//` comment, text without the slashes
+    Comment(Str), // `//` comment, text without the slashes
     BlockComment(Str),
 }
 
@@ -28,10 +28,7 @@ pub struct Token {
     bol: Bool,
 }
 
-pub const KEYWORDS: [Str] = ["and", "as", "break", "const", "continue", "else",
-    "enum", "false", "fn", "for", "if", "in", "let", "match", "mut", "nil",
-    "not", "or", "pub", "return", "struct", "test", "true", "type", "use",
-    "self", "while"]
+pub const KEYWORDS: [Str] = ["and", "as", "break", "const", "continue", "else", "enum", "false", "fn", "for", "if", "in", "let", "match", "mut", "nil", "not", "or", "pub", "return", "struct", "test", "true", "type", "use", "self", "while"]
 
 struct Lexer {
     src: Str,
@@ -295,8 +292,7 @@ fn Lexer.one(self, line: Int, col: Int, bol: Bool) -> !Token {
 
     // punctuation, longest match first
     let three = ["..="]
-    let two = ["..", "->", "=>", "==", "!=", "<=", ">=", "<<", ">>", "??",
-               "+=", "-=", "*=", "/=", "%="]
+    let two = ["..", "->", "=>", "==", "!=", "<=", ">=", "<<", ">>", "??", "+=", "-=", "*=", "/=", "%="]
     if self.i + 3 <= self.n {
         let s3 = self.src[self.i..self.i + 3]
         if three.contains(s3) {

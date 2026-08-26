@@ -24,15 +24,19 @@ pub fn List[T].pop(self) -> T {
 }
 
 /// First element, or nil when empty.
-pub fn List[T].first(self) -> ?T {
-    if self.len() == 0 { return nil }
+pub fn List[T].first(self) -> ? T {
+    if self.len() == 0 {
+        return nil
+    }
     return self[0]
 }
 
 /// Last element, or nil when empty.
-pub fn List[T].last(self) -> ?T {
+pub fn List[T].last(self) -> ? T {
     let n = self.len()
-    if n == 0 { return nil }
+    if n == 0 {
+        return nil
+    }
     return self[n - 1]
 }
 
@@ -145,7 +149,7 @@ pub fn List[T].contains(self, v: T) -> Bool {
 }
 
 /// The first element satisfying `f`, or nil.
-pub fn List[T].find(self, f: fn(T) -> Bool) -> ?T {
+pub fn List[T].find(self, f: fn(T) -> Bool) -> ? T {
     for x in self {
         if f(x) {
             return x
@@ -456,12 +460,12 @@ pub fn Str.bytes(self) -> [Byte] {
 }
 
 /// Parse as a decimal integer.
-pub fn Str.to_int(self) -> ?Int {
+pub fn Str.to_int(self) -> ? Int {
     return core.parse_int(self)
 }
 
 /// Parse as a floating-point number.
-pub fn Str.to_float(self) -> ?Float {
+pub fn Str.to_float(self) -> ? Float {
     return core.parse_float(self)
 }
 
@@ -562,7 +566,7 @@ pub fn Float.ceil(self) -> Float {
 /// Nearest integer, halfway cases away from zero.
 pub fn Float.round(self) -> Float {
     if self < 0.0 {
-        return -((-self + 0.5).floor())
+        return - ((-self + 0.5).floor())
     }
     return (self + 0.5).floor()
 }

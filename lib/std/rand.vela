@@ -2,7 +2,7 @@
 
 use core
 
-const RS: Int = 400   // runtime scratch offset for the generator state
+const RS: Int = 400 // runtime scratch offset for the generator state
 
 fn st(i: Int) -> Int {
     return @load64(@rt_base() + RS + i * 8)
@@ -101,7 +101,7 @@ pub fn shuffle[T](xs: [T]) {
 }
 
 /// A random element, or nil when the list is empty.
-pub fn pick[T](xs: [T]) -> ?T {
+pub fn pick[T](xs: [T]) -> ? T {
     if len(xs) == 0 {
         return nil
     }

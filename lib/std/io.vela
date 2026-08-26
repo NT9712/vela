@@ -46,7 +46,7 @@ pub fn read(fd: Int, n: Int) -> Str {
 
 /// Read one line from standard input, without the trailing newline.
 /// Returns nil at end of file.
-pub fn read_line() -> ?Str {
+pub fn read_line() -> ? Str {
     let mut out = ""
     let mut any = false
     let buf = core.str_alloc(1)
@@ -82,5 +82,4 @@ pub fn read_all() -> Str {
 }
 
 /// Flush is a no-op: Vela's output is unbuffered and every write is a syscall.
-pub fn flush() {
-}
+pub fn flush() {}
