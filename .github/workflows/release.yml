@@ -57,9 +57,12 @@ jobs:
             echo '```console'
             echo "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/vela-${{ steps.v.outputs.version }}-linux-x86_64.tar.gz | tar xz"
             echo "cd vela-${{ steps.v.outputs.version }}-linux-x86_64 && ./install.sh ~/.local"
-            echo 'export PATH="$HOME/.local/bin:$PATH" VELA_ROOT="$HOME/.local/lib/vela"'
+            echo 'export PATH="$HOME/.local/bin:$PATH"'
             echo 'vela new hello && cd hello && vela run'
             echo '```'
+            echo
+            echo 'No `VELA_ROOT` needed: `velac` finds its library next to its own binary.'
+            echo 'x86-64 Linux. The binaries are static and depend on nothing.'
             echo
             echo '### Contents'
             echo
