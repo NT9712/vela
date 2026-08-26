@@ -1,0 +1,657 @@
+// core/prelude — the methods every Vela program gets for free.
+//
+// These are ordinary Vela methods on the built-in types. They are always in
+// scope because the compiler loads this module for every compilation, and
+// whole-program dead-code elimination removes the ones you do not call.
+
+use core
+
+// ---------------------------------------------------------------------- List
+
+/// Number of elements.
+pub fn List[T].len(self) -> Int {
+    return @load64(@addr(self) + 8)
+}
+
+/// Append `v` to the end.
+pub fn List[T].push(self, v: T) {
+    core.list_push(@addr(self), core.word_of(v))
+}
+
+/// Remove and return the last element. Panics when empty.
+pub fn List[T].pop(self) -> T {
+    return @ref[T](core.list_pop(@addr(self)))
+}
+
+/// First element, or nil when empty.
+pub fn List[T].first(self) -> ?T {
+    if self.len() == 0 { return nil }
+    return self[0]
+}
+
+/// Last element, or nil when empty.
+pub fn List[T].last(self) -> ?T {
+    let n = self.len()
+    if n == 0 { return nil }
+    return self[n - 1]
+}
+
+/// True when there are no elements.
+pub fn List[T].is_empty(self) -> Bool {
+    return self.len() == 0
+}
+
+/// Insert `v` at index `i`, shifting later elements right.
+pub fn List[T].insert(self, i: Int, v: T) {
+    core.list_insert(@addr(self), i, core.word_of(v))
+}
+
+/// Remove and return the element at index `i`.
+pub fn List[T].remove(self, i: Int) -> T {
+    return @ref[T](core.list_remove(@addr(self), i))
+}
+
+/// Drop every element.
+pub fn List[T].clear(self) {
+    @store64(@addr(self) + 8, 0)
+}
+
+/// A shallow copy.
+pub fn List[T].copy(self) -> [T] {
+    return self[0..self.len()]
+}
+
+/// Reverse in place.
+pub fn List[T].reverse(self) {
+    let n = self.len()
+    let mut i = 0
+    while i < n / 2 {
+        let a = self[i]
+        self[i] = self[n - 1 - i]
+        self[n - 1 - i] = a
+        i += 1
+    }
+}
+
+/// A new list holding `f(x)` for each element.
+pub fn List[T, U].map(self, f: fn(T) -> U) -> [U] {
+    let out: [U] = []
+    for x in self {
+        out.push(f(x))
+    }
+    return out
+}
+
+/// A new list holding the elements for which `f` is true.
+pub fn List[T].filter(self, f: fn(T) -> Bool) -> [T] {
+    let out: [T] = []
+    for x in self {
+        if f(x) {
+            out.push(x)
+        }
+    }
+    return out
+}
+
+/// Left fold: `f(f(f(init, x0), x1), ...)`.
+pub fn List[T, A].fold(self, init: A, f: fn(A, T) -> A) -> A {
+    let mut acc = init
+    for x in self {
+        acc = f(acc, x)
+    }
+    return acc
+}
+
+/// Call `f` for every element.
+pub fn List[T].each(self, f: fn(T)) {
+    for x in self {
+        f(x)
+    }
+}
+
+/// True when any element satisfies `f`.
+pub fn List[T].any(self, f: fn(T) -> Bool) -> Bool {
+    for x in self {
+        if f(x) {
+            return true
+        }
+    }
+    return false
+}
+
+/// True when every element satisfies `f`.
+pub fn List[T].all(self, f: fn(T) -> Bool) -> Bool {
+    for x in self {
+        if not f(x) {
+            return false
+        }
+    }
+    return true
+}
+
+/// Index of the first element equal to `v`, or -1.
+pub fn List[T].index_of(self, v: T) -> Int {
+    for i, x in self {
+        if x == v {
+            return i
+        }
+    }
+    return -1
+}
+
+/// True when some element equals `v`.
+pub fn List[T].contains(self, v: T) -> Bool {
+    return self.index_of(v) >= 0
+}
+
+/// The first element satisfying `f`, or nil.
+pub fn List[T].find(self, f: fn(T) -> Bool) -> ?T {
+    for x in self {
+        if f(x) {
+            return x
+        }
+    }
+    return nil
+}
+
+/// Sort in place with `less(a, b)` deciding the order (in-place heapsort, so
+/// this never allocates and always runs in O(n log n)).
+pub fn List[T].sort_by(self, less: fn(T, T) -> Bool) {
+    let n = self.len()
+    let mut start = n / 2
+    while start > 0 {
+        start -= 1
+        sift_down(self, start, n, less)
+    }
+    let mut end = n
+    while end > 1 {
+        end -= 1
+        let t = self[0]
+        self[0] = self[end]
+        self[end] = t
+        sift_down(self, 0, end, less)
+    }
+}
+
+fn sift_down[T](xs: [T], root: Int, end: Int, less: fn(T, T) -> Bool) {
+    let mut r = root
+    while r * 2 + 1 < end {
+        let mut c = r * 2 + 1
+        if c + 1 < end and less(xs[c], xs[c + 1]) {
+            c += 1
+        }
+        if not less(xs[r], xs[c]) {
+            return
+        }
+        let t = xs[r]
+        xs[r] = xs[c]
+        xs[c] = t
+        r = c
+    }
+}
+
+/// Join the elements with `sep` between them.
+pub fn List[T].join(self, sep: Str) -> Str {
+    let mut r = ""
+    for i, x in self {
+        if i > 0 {
+            r = r + sep
+        }
+        r = r + str(x)
+    }
+    return r
+}
+
+// ----------------------------------------------------------------------- Map
+
+/// Number of entries.
+pub fn Map[K, V].len(self) -> Int {
+    return core.map_len(@addr(self))
+}
+
+/// True when the map holds `k`.
+pub fn Map[K, V].has(self, k: K) -> Bool {
+    return core.map_find(@addr(self), core.word_of(k)) != 0
+}
+
+/// Remove `k`; returns true when it was present.
+pub fn Map[K, V].delete(self, k: K) -> Bool {
+    return core.map_delete(@addr(self), core.word_of(k))
+}
+
+/// Drop every entry.
+pub fn Map[K, V].clear(self) {
+    core.map_clear(@addr(self))
+}
+
+/// True when there are no entries.
+pub fn Map[K, V].is_empty(self) -> Bool {
+    return self.len() == 0
+}
+
+/// The keys, in unspecified order.
+pub fn Map[K, V].keys(self) -> [K] {
+    let out: [K] = []
+    for k, _v in self {
+        out.push(k)
+    }
+    return out
+}
+
+/// The values, in unspecified order.
+pub fn Map[K, V].values(self) -> [V] {
+    let out: [V] = []
+    for _k, v in self {
+        out.push(v)
+    }
+    return out
+}
+
+/// The value for `k`, or `d` when absent.
+pub fn Map[K, V].get_or(self, k: K, d: V) -> V {
+    return self[k] ?? d
+}
+
+// ----------------------------------------------------------------------- Str
+
+/// Length in bytes.
+pub fn Str.len(self) -> Int {
+    return @load64(@addr(self) + 8)
+}
+
+/// True when the string is empty.
+pub fn Str.is_empty(self) -> Bool {
+    return self.len() == 0
+}
+
+/// A copy with ASCII letters upper-cased.
+pub fn Str.upper(self) -> Str {
+    let n = self.len()
+    let p = core.str_alloc(n)
+    let src = @addr(self) + 16
+    let mut i = 0
+    while i < n {
+        let c = @load8(src + i)
+        if c >= 97 and c <= 122 {
+            @store8(p + 16 + i, c - 32)
+        } else {
+            @store8(p + 16 + i, c)
+        }
+        i += 1
+    }
+    return @ref[Str](p)
+}
+
+/// A copy with ASCII letters lower-cased.
+pub fn Str.lower(self) -> Str {
+    let n = self.len()
+    let p = core.str_alloc(n)
+    let src = @addr(self) + 16
+    let mut i = 0
+    while i < n {
+        let c = @load8(src + i)
+        if c >= 65 and c <= 90 {
+            @store8(p + 16 + i, c + 32)
+        } else {
+            @store8(p + 16 + i, c)
+        }
+        i += 1
+    }
+    return @ref[Str](p)
+}
+
+/// Remove leading and trailing ASCII whitespace.
+pub fn Str.trim(self) -> Str {
+    let n = self.len()
+    let p = @addr(self) + 16
+    let mut a = 0
+    let mut b = n
+    while a < b and is_space(@load8(p + a)) {
+        a += 1
+    }
+    while b > a and is_space(@load8(p + b - 1)) {
+        b -= 1
+    }
+    return self[a..b]
+}
+
+fn is_space(c: Int) -> Bool {
+    return c == 32 or c == 9 or c == 10 or c == 13
+}
+
+/// True when the string begins with `p`.
+pub fn Str.starts_with(self, p: Str) -> Bool {
+    if p.len() > self.len() {
+        return false
+    }
+    return self[0..p.len()] == p
+}
+
+/// True when the string ends with `p`.
+pub fn Str.ends_with(self, p: Str) -> Bool {
+    let n = self.len()
+    let m = p.len()
+    if m > n {
+        return false
+    }
+    return self[n - m..n] == p
+}
+
+/// Byte index of the first occurrence of `p`, or -1.
+pub fn Str.index_of(self, p: Str) -> Int {
+    let n = self.len()
+    let m = p.len()
+    if m == 0 {
+        return 0
+    }
+    if m > n {
+        return -1
+    }
+    let mut i = 0
+    while i + m <= n {
+        if self[i..i + m] == p {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+/// True when `p` occurs anywhere in the string.
+pub fn Str.contains(self, p: Str) -> Bool {
+    return self.index_of(p) >= 0
+}
+
+/// Split on every occurrence of `sep`.
+pub fn Str.split(self, sep: Str) -> [Str] {
+    let out: [Str] = []
+    let m = sep.len()
+    if m == 0 {
+        for i in 0..self.len() {
+            out.push(self[i..i + 1])
+        }
+        return out
+    }
+    let n = self.len()
+    let mut start = 0
+    let mut i = 0
+    while i + m <= n {
+        if self[i..i + m] == sep {
+            out.push(self[start..i])
+            i += m
+            start = i
+        } else {
+            i += 1
+        }
+    }
+    out.push(self[start..n])
+    return out
+}
+
+/// Split on runs of ASCII whitespace, dropping empty pieces.
+pub fn Str.words(self) -> [Str] {
+    let out: [Str] = []
+    let n = self.len()
+    let p = @addr(self) + 16
+    let mut i = 0
+    while i < n {
+        while i < n and is_space(@load8(p + i)) {
+            i += 1
+        }
+        let start = i
+        while i < n and not is_space(@load8(p + i)) {
+            i += 1
+        }
+        if i > start {
+            out.push(self[start..i])
+        }
+    }
+    return out
+}
+
+/// Split into lines, dropping a trailing newline.
+pub fn Str.lines(self) -> [Str] {
+    let mut s = self
+    if s.ends_with("\n") {
+        s = s[0..s.len() - 1]
+    }
+    if s.len() == 0 {
+        let e: [Str] = []
+        return e
+    }
+    return s.split("\n")
+}
+
+/// Replace every occurrence of `from` with `to`.
+pub fn Str.replace(self, from: Str, to: Str) -> Str {
+    if from.len() == 0 {
+        return self
+    }
+    return self.split(from).join(to)
+}
+
+/// The string repeated `n` times.
+pub fn Str.repeat(self, n: Int) -> Str {
+    let mut r = ""
+    let mut i = 0
+    while i < n {
+        r = r + self
+        i += 1
+    }
+    return r
+}
+
+/// Byte at index `i`.
+pub fn Str.at(self, i: Int) -> Byte {
+    return core.str_index(self, i)
+}
+
+/// The bytes as a list.
+pub fn Str.bytes(self) -> [Byte] {
+    let out: [Byte] = []
+    for b in self {
+        out.push(b)
+    }
+    return out
+}
+
+/// Parse as a decimal integer.
+pub fn Str.to_int(self) -> ?Int {
+    return core.parse_int(self)
+}
+
+/// Parse as a floating-point number.
+pub fn Str.to_float(self) -> ?Float {
+    return core.parse_float(self)
+}
+
+/// A 63-bit hash of the contents.
+pub fn Str.hash(self) -> Int {
+    return core.str_hash(self)
+}
+
+// -------------------------------------------------------------------- Range
+
+/// Number of values the range yields.
+pub fn Range.len(self) -> Int {
+    let n = @load64(@addr(self) + 24) - @load64(@addr(self) + 16)
+    if n < 0 {
+        return 0
+    }
+    return n
+}
+
+/// The values as a list.
+pub fn Range.list(self) -> [Int] {
+    let out: [Int] = []
+    for i in self {
+        out.push(i)
+    }
+    return out
+}
+
+// --------------------------------------------------------------------- Error
+
+/// The message.
+pub fn Error.message(self) -> Str {
+    return self.msg
+}
+
+// ------------------------------------------------------------------ numbers
+
+/// Absolute value.
+pub fn Int.abs(self) -> Int {
+    if self < 0 {
+        return -self
+    }
+    return self
+}
+
+/// The smaller of the two.
+pub fn Int.min(self, o: Int) -> Int {
+    if self < o {
+        return self
+    }
+    return o
+}
+
+/// The larger of the two.
+pub fn Int.max(self, o: Int) -> Int {
+    if self > o {
+        return self
+    }
+    return o
+}
+
+/// Clamp into `lo..=hi`.
+pub fn Int.clamp(self, lo: Int, hi: Int) -> Int {
+    return self.max(lo).min(hi)
+}
+
+/// Base-16 representation without a prefix.
+pub fn Int.hex(self) -> Str {
+    return core.int_to_hex(self)
+}
+
+/// Absolute value.
+pub fn Float.abs(self) -> Float {
+    if self < 0.0 {
+        return -self
+    }
+    return self
+}
+
+/// Largest integer not greater than `self`.
+pub fn Float.floor(self) -> Float {
+    let t = float(int(self))
+    if t > self {
+        return t - 1.0
+    }
+    return t
+}
+
+/// Smallest integer not less than `self`.
+pub fn Float.ceil(self) -> Float {
+    let t = float(int(self))
+    if t < self {
+        return t + 1.0
+    }
+    return t
+}
+
+/// Nearest integer, halfway cases away from zero.
+pub fn Float.round(self) -> Float {
+    if self < 0.0 {
+        return -((-self + 0.5).floor())
+    }
+    return (self + 0.5).floor()
+}
+
+/// The smaller of the two.
+pub fn Float.min(self, o: Float) -> Float {
+    if self < o {
+        return self
+    }
+    return o
+}
+
+/// The larger of the two.
+pub fn Float.max(self, o: Float) -> Float {
+    if self > o {
+        return self
+    }
+    return o
+}
+
+/// Square root (Newton's method; exact for representable squares).
+pub fn Float.sqrt(self) -> Float {
+    if self < 0.0 {
+        return 0.0 / 0.0
+    }
+    if self == 0.0 {
+        return 0.0
+    }
+    let mut x = self
+    let mut i = 0
+    while i < 60 {
+        let nx = 0.5 * (x + self / x)
+        if nx == x {
+            return x
+        }
+        x = nx
+        i += 1
+    }
+    return x
+}
+
+/// True when the value is not a number.
+pub fn Float.is_nan(self) -> Bool {
+    return self != self
+}
+
+/// `self` raised to an integer power.
+pub fn Float.pow(self, n: Int) -> Float {
+    if n < 0 {
+        return 1.0 / self.pow(-n)
+    }
+    let mut r = 1.0
+    let mut b = self
+    let mut e = n
+    while e > 0 {
+        if e % 2 == 1 {
+            r = r * b
+        }
+        b = b * b
+        e = e / 2
+    }
+    return r
+}
+
+// --------------------------------------------------------------------- Byte
+
+/// True for ASCII digits.
+pub fn Byte.is_digit(self) -> Bool {
+    return self >= '0' and self <= '9'
+}
+
+/// True for ASCII letters.
+pub fn Byte.is_alpha(self) -> Bool {
+    return (self >= 'a' and self <= 'z') or (self >= 'A' and self <= 'Z')
+}
+
+/// True for ASCII letters and digits.
+pub fn Byte.is_alnum(self) -> Bool {
+    return self.is_alpha() or self.is_digit()
+}
+
+/// True for space, tab, newline or carriage return.
+pub fn Byte.is_space(self) -> Bool {
+    return self == ' ' or self == '\t' or self == '\n' or self == '\r'
+}
+
+/// The byte as a one-character string.
+pub fn Byte.str(self) -> Str {
+    let p = core.str_alloc(1)
+    @store8(p + 16, int(self))
+    return @ref[Str](p)
+}

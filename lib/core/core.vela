@@ -1,0 +1,1426 @@
+// core — the Vela runtime.
+//
+// This module is written in Vela and compiled by the same compiler as your
+// program. There is no C, no libc and no privileged layer underneath: the
+// allocator, the garbage collector, strings, lists, maps and formatting are
+// ordinary Vela code that uses the `@` intrinsics described in §13 of the spec.
+//
+// Heap object layout:
+//
+//     +0   u32  total size in bytes, including this header
+//     +4   u8   gc kind (0 = atomic, 1 = scan)
+//     +5   u8   mark bit
+//     +6   u16  tag (enum variant / misc)
+//     +8   u64  aux (byte length for Str, element count for List/Map)
+//     +16       payload
+//
+// See docs/memory.md for the memory model in prose.
+
+// ------------------------------------------------------------------ syscalls
+
+pub const SYS_READ: Int = 0
+pub const SYS_WRITE: Int = 1
+pub const SYS_OPEN: Int = 2
+pub const SYS_CLOSE: Int = 3
+pub const SYS_MMAP: Int = 9
+pub const SYS_MUNMAP: Int = 11
+pub const SYS_EXIT_GROUP: Int = 231
+
+pub fn sys_write(fd: Int, buf: Int, n: Int) -> Int {
+    return @syscall(SYS_WRITE, fd, buf, n)
+}
+
+pub fn exit(code: Int) {
+    @syscall(SYS_EXIT_GROUP, code)
+}
+
+// ------------------------------------------------- runtime state area layout
+
+const RT_STACK_TOP: Int = 0
+const RT_ARGC: Int = 8
+const RT_ARGV: Int = 16
+const RT_ENVP: Int = 24
+const RT_HEAP_BASE: Int = 32
+const RT_HEAP_BUMP: Int = 40
+const RT_HEAP_LIMIT: Int = 48
+const RT_SINCE_GC: Int = 56
+const RT_THRESHOLD: Int = 64
+const RT_MARKSTACK: Int = 72
+const RT_MARKCAP: Int = 80
+const RT_MARKTOP: Int = 88
+const RT_OVERFLOW: Int = 96
+const RT_COLLECTIONS: Int = 104
+const RT_GC_OFF: Int = 112
+const RT_NCHUNKS: Int = 120
+const RT_CHUNKLIST: Int = 128
+const RT_CHUNKCAP: Int = 136
+const RT_CLASSES: Int = 144        // 20 words
+const RT_LIVE: Int = 304
+const RT_TESTS_RUN: Int = 312
+const RT_TESTS_FAIL: Int = 320
+const RT_TEST_NAME: Int = 328
+const RT_NGLOBALS: Int = 360
+const RT_GLOBALS: Int = 512
+
+fn rt() -> Int { return @rt_base() }
+fn rtl(off: Int) -> Int { return @load64(@rt_base() + off) }
+fn rts(off: Int, v: Int) { @store64(@rt_base() + off, v) }
+
+// --------------------------------------------------------------- chunk model
+
+const CHUNK_SIZE: Int = 65536
+const CHUNK_HDR: Int = 2048
+const CHUNK_MAGIC: Int = 0x56454C41
+
+const CH_MAGIC: Int = 0
+const CH_CLASS: Int = 8
+const CH_OBJSIZE: Int = 16
+const CH_NOBJ: Int = 24
+const CH_ALLOC_BM: Int = 64
+const CH_MARK_BM: Int = 576
+
+const NCLASS: Int = 20
+const MAX_SMALL: Int = 3328
+
+const KIND_ATOMIC: Int = 0
+const KIND_SCAN: Int = 1
+
+const HEAP_RESERVE: Int = 1073741824
+const MARKSTACK_BYTES: Int = 8388608
+
+pub fn class_size(c: Int) -> Int {
+    if c < 8 { return (c + 1) * 16 }
+    if c < 12 { return 128 + (c - 7) * 32 }
+    if c < 16 { return 256 + (c - 11) * 128 }
+    return 768 + (c - 15) * 512
+}
+
+fn size_class(n: Int) -> Int {
+    if n <= 128 { return (n + 15) / 16 - 1 }
+    if n <= 256 { return 7 + (n - 128 + 31) / 32 }
+    if n <= 768 { return 11 + (n - 256 + 127) / 128 }
+    if n <= MAX_SMALL { return 15 + (n - 768 + 511) / 512 }
+    return -1
+}
+
+fn bm_get(bm: Int, i: Int) -> Bool {
+    let b = @load8(bm + i / 8)
+    return (b >> (i % 8)) % 2 == 1
+}
+fn bm_set(bm: Int, i: Int) {
+    let a = bm + i / 8
+    @store8(a, @load8(a) | (1 << (i % 8)))
+}
+fn bm_clear(bm: Int, i: Int) {
+    let a = bm + i / 8
+    @store8(a, @load8(a) & (~(1 << (i % 8)) & 255))
+}
+
+fn mzero(p: Int, n: Int) {
+    let mut i = 0
+    while i + 8 <= n { @store64(p + i, 0); i += 8 }
+    while i < n { @store8(p + i, 0); i += 1 }
+}
+
+pub fn mcopy(dst: Int, src: Int, n: Int) {
+    let mut i = 0
+    while i + 8 <= n { @store64(dst + i, @load64(src + i)); i += 8 }
+    while i < n { @store8(dst + i, @load8(src + i)); i += 1 }
+}
+
+// ------------------------------------------------------------ initialisation
+
+pub fn rt_init() {
+    let want = HEAP_RESERVE + CHUNK_SIZE
+    let p = @syscall(SYS_MMAP, 0, want, 3, 0x4022, -1, 0)
+    if p < 0 or p == 0 {
+        let m = "vela: cannot reserve heap\n"
+        sys_write(2, @addr(m) + 16, len(m))
+        exit(70)
+    }
+    let base = (p + CHUNK_SIZE - 1) & ~(CHUNK_SIZE - 1)
+    rts(RT_HEAP_BASE, base)
+    rts(RT_HEAP_BUMP, base)
+    rts(RT_HEAP_LIMIT, p + want)
+    rts(RT_THRESHOLD, 4194304)
+    rts(RT_SINCE_GC, 0)
+
+    let ms = @syscall(SYS_MMAP, 0, MARKSTACK_BYTES, 3, 0x4022, -1, 0)
+    rts(RT_MARKSTACK, ms)
+    rts(RT_MARKCAP, MARKSTACK_BYTES / 8)
+    rts(RT_MARKTOP, 0)
+
+    let cl = @syscall(SYS_MMAP, 0, 1048576, 3, 0x4022, -1, 0)
+    rts(RT_CHUNKLIST, cl)
+    rts(RT_CHUNKCAP, 131072)
+    rts(RT_NCHUNKS, 0)
+
+    let mut c = 0
+    while c < NCLASS {
+        @store64(rt() + RT_CLASSES + c * 8, 0)
+        c += 1
+    }
+}
+
+// ---------------------------------------------------------------- allocation
+
+fn new_chunks(n: Int) -> Int {
+    let bump = rtl(RT_HEAP_BUMP)
+    let need = n * CHUNK_SIZE
+    if bump + need > rtl(RT_HEAP_LIMIT) {
+        let m = "vela: out of memory (heap reservation exhausted)\n"
+        sys_write(2, @addr(m) + 16, len(m))
+        exit(70)
+    }
+    rts(RT_HEAP_BUMP, bump + need)
+    let nc = rtl(RT_NCHUNKS)
+    if nc < rtl(RT_CHUNKCAP) {
+        @store64(rtl(RT_CHUNKLIST) + nc * 8, bump)
+        rts(RT_NCHUNKS, nc + 1)
+    }
+    return bump
+}
+
+fn grow_class(c: Int) {
+    let ch = new_chunks(1)
+    let osz = class_size(c)
+    let nobj = (CHUNK_SIZE - CHUNK_HDR) / osz
+    @store64(ch + CH_MAGIC, CHUNK_MAGIC)
+    @store64(ch + CH_CLASS, c)
+    @store64(ch + CH_OBJSIZE, osz)
+    @store64(ch + CH_NOBJ, nobj)
+    mzero(ch + CH_ALLOC_BM, 1024)
+    // thread every object of the new chunk onto the class free list
+    let mut head = @load64(rt() + RT_CLASSES + c * 8)
+    let data = ch + CHUNK_HDR
+    let mut i = nobj - 1
+    while i >= 0 {
+        let o = data + i * osz
+        @store64(o, head)
+        head = o
+        i -= 1
+    }
+    @store64(rt() + RT_CLASSES + c * 8, head)
+}
+
+fn alloc_large(size: Int, kind: Int) -> Int {
+    let need = (size + CHUNK_HDR + CHUNK_SIZE - 1) / CHUNK_SIZE
+    // reuse a freed run if one is big enough
+    let n = rtl(RT_NCHUNKS)
+    let list = rtl(RT_CHUNKLIST)
+    let mut i = 0
+    let mut ch = 0
+    while i < n {
+        let c = @load64(list + i * 8)
+        if @load64(c + CH_CLASS) == -2 {
+            if @load64(c + CH_NOBJ) >= need {
+                ch = c
+                i = n
+            }
+        }
+        i += 1
+    }
+    if ch == 0 {
+        ch = new_chunks(need)
+        @store64(ch + CH_NOBJ, need)
+    }
+    @store64(ch + CH_MAGIC, CHUNK_MAGIC)
+    @store64(ch + CH_CLASS, -1)
+    @store64(ch + CH_OBJSIZE, size)
+    mzero(ch + CH_ALLOC_BM, 1024)
+    bm_set(ch + CH_ALLOC_BM, 0)
+    let o = ch + CHUNK_HDR
+    mzero(o, size)
+    @store32(o, size)
+    @store8(o + 4, kind)
+    return o
+}
+
+pub fn alloc(size: Int, kind: Int) -> Int {
+    let sz = (size + 15) & ~15
+    rts(RT_SINCE_GC, rtl(RT_SINCE_GC) + sz)
+    if rtl(RT_SINCE_GC) > rtl(RT_THRESHOLD) {
+        if rtl(RT_GC_OFF) == 0 { collect() }
+    }
+    let c = size_class(sz)
+    if c < 0 { return alloc_large(sz, kind) }
+    let slot = rt() + RT_CLASSES + c * 8
+    var_check_free(slot, c)
+    let o = @load64(slot)
+    @store64(slot, @load64(o))
+    let osz = class_size(c)
+    mzero(o, osz)
+    @store32(o, osz)
+    @store8(o + 4, kind)
+    let ch = chunk_of(o)
+    bm_set(ch + CH_ALLOC_BM, (o - ch - CHUNK_HDR) / osz)
+    return o
+}
+
+fn var_check_free(slot: Int, c: Int) {
+    if @load64(slot) == 0 { grow_class(c) }
+}
+
+fn chunk_of(p: Int) -> Int {
+    let base = rtl(RT_HEAP_BASE)
+    return base + ((p - base) / CHUNK_SIZE) * CHUNK_SIZE
+}
+
+// ------------------------------------------------------------- the collector
+
+fn is_object(w: Int) -> Bool {
+    let base = rtl(RT_HEAP_BASE)
+    if w < base { return false }
+    if w >= rtl(RT_HEAP_BUMP) { return false }
+    if w % 8 != 0 { return false }
+    let ch = base + ((w - base) / CHUNK_SIZE) * CHUNK_SIZE
+    if @load64(ch + CH_MAGIC) != CHUNK_MAGIC { return false }
+    let cls = @load64(ch + CH_CLASS)
+    if cls == -2 { return false }
+    let osz = @load64(ch + CH_OBJSIZE)
+    if osz <= 0 { return false }
+    let off = w - ch - CHUNK_HDR
+    if off < 0 { return false }
+    if cls < 0 {
+        if off != 0 { return false }
+        return bm_get(ch + CH_ALLOC_BM, 0)
+    }
+    if off % osz != 0 { return false }
+    let idx = off / osz
+    if idx >= @load64(ch + CH_NOBJ) { return false }
+    return bm_get(ch + CH_ALLOC_BM, idx)
+}
+
+fn obj_index(ch: Int, o: Int) -> Int {
+    if @load64(ch + CH_CLASS) < 0 { return 0 }
+    return (o - ch - CHUNK_HDR) / @load64(ch + CH_OBJSIZE)
+}
+
+fn try_mark(w: Int) {
+    if not is_object(w) { return }
+    let ch = chunk_of(w)
+    let i = obj_index(ch, w)
+    if bm_get(ch + CH_MARK_BM, i) { return }
+    bm_set(ch + CH_MARK_BM, i)
+    let top = rtl(RT_MARKTOP)
+    if top >= rtl(RT_MARKCAP) {
+        rts(RT_OVERFLOW, 1)
+        return
+    }
+    @store64(rtl(RT_MARKSTACK) + top * 8, w)
+    rts(RT_MARKTOP, top + 1)
+}
+
+fn scan_obj(o: Int) {
+    if @load8(o + 4) % 2 == 0 { return }
+    let size = @load32(o)
+    let mut p = o + 16
+    let e = o + size
+    while p < e {
+        try_mark(@load64(p))
+        p += 8
+    }
+}
+
+fn drain() {
+    while rtl(RT_MARKTOP) > 0 {
+        let top = rtl(RT_MARKTOP) - 1
+        rts(RT_MARKTOP, top)
+        scan_obj(@load64(rtl(RT_MARKSTACK) + top * 8))
+    }
+}
+
+fn rescan_all() {
+    // Called only when the mark stack overflowed: walk every live object again
+    // and push anything its children still need.
+    let n = rtl(RT_NCHUNKS)
+    let list = rtl(RT_CHUNKLIST)
+    let mut i = 0
+    while i < n {
+        let ch = @load64(list + i * 8)
+        let cls = @load64(ch + CH_CLASS)
+        if cls != -2 {
+            let nobj = @load64(ch + CH_NOBJ)
+            let osz = @load64(ch + CH_OBJSIZE)
+            let count = if_int(cls < 0, 1, nobj)
+            let mut k = 0
+            while k < count {
+                if bm_get(ch + CH_MARK_BM, k) {
+                    scan_obj(ch + CHUNK_HDR + k * osz)
+                }
+                k += 1
+            }
+        }
+        i += 1
+    }
+}
+
+fn if_int(c: Bool, a: Int, b: Int) -> Int {
+    if c { return a }
+    return b
+}
+
+fn mark_range(lo: Int, hi: Int) {
+    let mut p = lo
+    while p < hi {
+        try_mark(@load64(p))
+        p += 8
+    }
+}
+
+fn sweep() {
+    let mut c = 0
+    while c < NCLASS {
+        @store64(rt() + RT_CLASSES + c * 8, 0)
+        c += 1
+    }
+    let n = rtl(RT_NCHUNKS)
+    let list = rtl(RT_CHUNKLIST)
+    let mut live = 0
+    let mut i = 0
+    while i < n {
+        let ch = @load64(list + i * 8)
+        let cls = @load64(ch + CH_CLASS)
+        if cls == -2 {
+            i += 1
+            continue
+        }
+        let osz = @load64(ch + CH_OBJSIZE)
+        if cls < 0 {
+            if bm_get(ch + CH_MARK_BM, 0) {
+                bm_clear(ch + CH_MARK_BM, 0)
+                live += osz
+            } else {
+                bm_clear(ch + CH_ALLOC_BM, 0)
+                @store64(ch + CH_CLASS, -2)
+                @store64(ch + CH_MAGIC, 0)
+            }
+            i += 1
+            continue
+        }
+        let nobj = @load64(ch + CH_NOBJ)
+        let data = ch + CHUNK_HDR
+        let head0 = @load64(rt() + RT_CLASSES + cls * 8)
+        let mut head = head0
+        let mut k = 0
+        while k < nobj {
+            if bm_get(ch + CH_ALLOC_BM, k) {
+                if bm_get(ch + CH_MARK_BM, k) {
+                    bm_clear(ch + CH_MARK_BM, k)
+                    live += osz
+                } else {
+                    bm_clear(ch + CH_ALLOC_BM, k)
+                    let o = data + k * osz
+                    @store64(o, head)
+                    head = o
+                }
+            } else {
+                let o = data + k * osz
+                @store64(o, head)
+                head = o
+            }
+            k += 1
+        }
+        @store64(rt() + RT_CLASSES + cls * 8, head)
+        i += 1
+    }
+    rts(RT_LIVE, live)
+    let t = live * 2
+    rts(RT_THRESHOLD, if_int(t < 4194304, 4194304, t))
+    rts(RT_SINCE_GC, 0)
+}
+
+pub fn collect() {
+    rts(RT_GC_OFF, 1)
+    rts(RT_MARKTOP, 0)
+    rts(RT_OVERFLOW, 0)
+    // globals
+    let g = rt() + RT_GLOBALS
+    mark_range(g, g + rtl(RT_NGLOBALS) * 8)
+    // machine stack, including the callee-saved registers pushed right here
+    let sp = @save_regs()
+    mark_range(sp, rtl(RT_STACK_TOP))
+    drain()
+    while rtl(RT_OVERFLOW) == 1 {
+        rts(RT_OVERFLOW, 0)
+        rescan_all()
+        drain()
+    }
+    @restore_regs()
+    sweep()
+    rts(RT_COLLECTIONS, rtl(RT_COLLECTIONS) + 1)
+    rts(RT_GC_OFF, 0)
+}
+
+/// Number of collections performed so far.
+pub fn gc_collections() -> Int { return rtl(RT_COLLECTIONS) }
+/// Bytes reachable at the end of the last collection.
+pub fn gc_live_bytes() -> Int { return rtl(RT_LIVE) }
+/// Total address space handed out by the allocator.
+pub fn gc_heap_bytes() -> Int { return rtl(RT_HEAP_BUMP) - rtl(RT_HEAP_BASE) }
+/// Force a collection now.
+pub fn gc_collect() { collect() }
+
+// -------------------------------------------------------------------- errors
+
+pub fn error_new(msg: Str, code: Int) -> Int {
+    let p = alloc(32, KIND_SCAN)
+    @store64(p + 16, @addr(msg))
+    @store64(p + 24, code)
+    return p
+}
+
+pub fn panic_str(msg: Str) {
+    let pre = "panic: "
+    sys_write(2, @addr(pre) + 16, len(pre))
+    sys_write(2, @addr(msg) + 16, len(msg))
+    let nl = "\n"
+    sys_write(2, @addr(nl) + 16, 1)
+    exit(101)
+}
+
+pub fn divzero(_x: Int) {
+    panic_str("division by zero")
+}
+
+pub fn oob(i: Int, n: Int) {
+    panic_str("index out of range: " + int_to_str(i) + " not in 0.." + int_to_str(n))
+}
+
+pub fn assert_fail(msg: Str, file: Str, line: Int) {
+    panic_str(msg + " (" + file + ":" + int_to_str(line) + ")")
+}
+
+pub fn assert_cmp_fail(a: Str, b: Str, file: Str, line: Int, isne: Int) {
+    let op = if_str(isne == 0, " == ", " != ")
+    panic_str("assertion failed: " + a + op + b + " (" + file + ":" + int_to_str(line) + ")")
+}
+
+fn if_str(c: Bool, a: Str, b: Str) -> Str {
+    if c { return a }
+    return b
+}
+
+pub fn finish_result(r: Int) -> Int {
+    if @load64(r + 16) == 0 { return 0 }
+    let e = @load64(r + 24)
+    let m = @ref[Str](@load64(e + 16))
+    let pre = "error: "
+    sys_write(2, @addr(pre) + 16, len(pre))
+    sys_write(2, @addr(m) + 16, len(m))
+    let nl = "\n"
+    sys_write(2, @addr(nl) + 16, 1)
+    let c = @load64(e + 24)
+    if c == 0 { return 1 }
+    return c & 255
+}
+
+// ------------------------------------------------------------------- strings
+
+pub fn str_alloc(n: Int) -> Int {
+    let p = alloc(17 + n, KIND_ATOMIC)
+    @store64(p + 8, n)
+    return p
+}
+
+pub fn str_from(addr: Int, n: Int) -> Str {
+    let p = str_alloc(n)
+    mcopy(p + 16, addr, n)
+    return @ref[Str](p)
+}
+
+pub fn str_data(s: Str) -> Int { return @addr(s) + 16 }
+
+pub fn str_concat(a: Str, b: Str) -> Str {
+    let la = len(a)
+    let lb = len(b)
+    if la == 0 { return b }
+    if lb == 0 { return a }
+    let p = str_alloc(la + lb)
+    mcopy(p + 16, @addr(a) + 16, la)
+    mcopy(p + 16 + la, @addr(b) + 16, lb)
+    return @ref[Str](p)
+}
+
+pub fn str_eq(a: Str, b: Str) -> Bool {
+    if @addr(a) == @addr(b) { return true }
+    let n = len(a)
+    if n != len(b) { return false }
+    let pa = @addr(a) + 16
+    let pb = @addr(b) + 16
+    let mut i = 0
+    while i + 8 <= n {
+        if @load64(pa + i) != @load64(pb + i) { return false }
+        i += 8
+    }
+    while i < n {
+        if @load8(pa + i) != @load8(pb + i) { return false }
+        i += 1
+    }
+    return true
+}
+
+pub fn str_cmp(a: Str, b: Str) -> Int {
+    let na = len(a)
+    let nb = len(b)
+    let n = if_int(na < nb, na, nb)
+    let pa = @addr(a) + 16
+    let pb = @addr(b) + 16
+    let mut i = 0
+    while i < n {
+        let x = @load8(pa + i)
+        let y = @load8(pb + i)
+        if x != y { return x - y }
+        i += 1
+    }
+    return na - nb
+}
+
+pub fn str_index(s: Str, i: Int) -> Byte {
+    let n = len(s)
+    if i < 0 or i >= n { oob(i, n) }
+    return byte(@load8(@addr(s) + 16 + i))
+}
+
+pub fn str_slice(s: Str, a: Int, b: Int) -> Str {
+    let n = len(s)
+    let mut lo = a
+    let mut hi = b
+    if hi < 0 { hi = n }
+    if lo < 0 { lo = 0 }
+    if hi > n { hi = n }
+    if lo > hi { lo = hi }
+    return str_from(@addr(s) + 16 + lo, hi - lo)
+}
+
+pub fn str_hash(s: Str) -> Int {
+    let n = len(s)
+    let p = @addr(s) + 16
+    let mut h = -3750763034362895579
+    let mut i = 0
+    while i < n {
+        h = (h ^ @load8(p + i)) * 1099511628211
+        i += 1
+    }
+    return h & 0x7FFFFFFFFFFFFFFF
+}
+
+// --------------------------------------------------------------------- lists
+//
+// List object: aux = length, +16 capacity, +24 pointer to the element block.
+
+const L_CAP: Int = 16
+const L_DATA: Int = 24
+
+pub fn list_new(cap: Int, isref: Int) -> Int {
+    let c = if_int(cap < 4, 4, cap)
+    let p = alloc(32, KIND_SCAN)
+    @store64(p + 8, 0)
+    @store64(p + L_CAP, c)
+    @store64(p + L_DATA, alloc(16 + c * 8, if_int(isref == 1, KIND_SCAN, KIND_ATOMIC)))
+    return p
+}
+
+fn list_grow(l: Int, need: Int) {
+    let cap = @load64(l + L_CAP)
+    if need <= cap { return }
+    let mut nc = cap * 2
+    while nc < need { nc = nc * 2 }
+    let old = @load64(l + L_DATA)
+    let kind = @load8(old + 4)
+    let nd = alloc(16 + nc * 8, kind)
+    mcopy(nd + 16, old + 16, @load64(l + 8) * 8)
+    @store64(l + L_DATA, nd)
+    @store64(l + L_CAP, nc)
+}
+
+pub fn list_push(l: Int, v: Int) {
+    let n = @load64(l + 8)
+    list_grow(l, n + 1)
+    @store64(@load64(l + L_DATA) + 16 + n * 8, v)
+    @store64(l + 8, n + 1)
+}
+
+pub fn list_get(l: Int, i: Int) -> Int {
+    let n = @load64(l + 8)
+    if i < 0 or i >= n { oob(i, n) }
+    return @load64(@load64(l + L_DATA) + 16 + i * 8)
+}
+
+pub fn list_set(l: Int, i: Int, v: Int) {
+    let n = @load64(l + 8)
+    if i < 0 or i >= n { oob(i, n) }
+    @store64(@load64(l + L_DATA) + 16 + i * 8, v)
+}
+
+pub fn list_pop(l: Int) -> Int {
+    let n = @load64(l + 8)
+    if n == 0 { panic_str("pop from an empty list") }
+    let v = @load64(@load64(l + L_DATA) + 16 + (n - 1) * 8)
+    @store64(l + 8, n - 1)
+    return v
+}
+
+pub fn list_isref(l: Int) -> Int {
+    return @load8(@load64(l + L_DATA) + 4) % 2
+}
+
+pub fn list_concat(a: Int, b: Int, _desc: Int) -> Int {
+    let na = @load64(a + 8)
+    let nb = @load64(b + 8)
+    let r = list_new(na + nb, list_isref(a))
+    mcopy(@load64(r + L_DATA) + 16, @load64(a + L_DATA) + 16, na * 8)
+    mcopy(@load64(r + L_DATA) + 16 + na * 8, @load64(b + L_DATA) + 16, nb * 8)
+    @store64(r + 8, na + nb)
+    return r
+}
+
+pub fn list_slice(l: Int, a: Int, b: Int) -> Int {
+    let n = @load64(l + 8)
+    let mut lo = a
+    let mut hi = b
+    if hi < 0 { hi = n }
+    if lo < 0 { lo = 0 }
+    if hi > n { hi = n }
+    if lo > hi { lo = hi }
+    let r = list_new(hi - lo, list_isref(l))
+    mcopy(@load64(r + L_DATA) + 16, @load64(l + L_DATA) + 16 + lo * 8, (hi - lo) * 8)
+    @store64(r + 8, hi - lo)
+    return r
+}
+
+pub fn list_insert(l: Int, i: Int, v: Int) {
+    let n = @load64(l + 8)
+    if i < 0 or i > n { oob(i, n + 1) }
+    list_grow(l, n + 1)
+    let d = @load64(l + L_DATA) + 16
+    let mut k = n
+    while k > i {
+        @store64(d + k * 8, @load64(d + (k - 1) * 8))
+        k -= 1
+    }
+    @store64(d + i * 8, v)
+    @store64(l + 8, n + 1)
+}
+
+pub fn list_remove(l: Int, i: Int) -> Int {
+    let n = @load64(l + 8)
+    if i < 0 or i >= n { oob(i, n) }
+    let d = @load64(l + L_DATA) + 16
+    let v = @load64(d + i * 8)
+    let mut k = i
+    while k + 1 < n {
+        @store64(d + k * 8, @load64(d + (k + 1) * 8))
+        k += 1
+    }
+    @store64(l + 8, n - 1)
+    return v
+}
+
+// ---------------------------------------------------------------------- maps
+//
+// Open addressing with linear probing. Each slot is three words:
+// state (0 empty, 1 used, 2 tombstone), key, value.
+
+const M_CAP: Int = 16
+const M_ENTRIES: Int = 24
+const M_KEYDESC: Int = 32
+const M_USED: Int = 40
+
+pub fn map_new(keydesc: Int, _valisref: Int) -> Int {
+    let p = alloc(48, KIND_SCAN)
+    let cap = 16
+    @store64(p + 8, 0)
+    @store64(p + M_CAP, cap)
+    @store64(p + M_ENTRIES, alloc(16 + cap * 24, KIND_SCAN))
+    @store64(p + M_KEYDESC, keydesc)
+    @store64(p + M_USED, 0)
+    return p
+}
+
+fn map_probe(m: Int, k: Int) -> Int {
+    let cap = @load64(m + M_CAP)
+    let e = @load64(m + M_ENTRIES) + 16
+    let d = @load64(m + M_KEYDESC)
+    let mut i = (any_hash(k, d) % cap + cap) % cap
+    let mut tomb = -1
+    let mut n = 0
+    while n < cap {
+        let st = @load64(e + i * 24)
+        if st == 0 {
+            if tomb >= 0 { return -2 - tomb }
+            return -2 - i
+        }
+        if st == 1 {
+            if any_eq(@load64(e + i * 24 + 8), k, d) { return i }
+        } else {
+            if tomb < 0 { tomb = i }
+        }
+        i = (i + 1) % cap
+        n += 1
+    }
+    if tomb >= 0 { return -2 - tomb }
+    return -1
+}
+
+fn map_rehash(m: Int) {
+    let oldcap = @load64(m + M_CAP)
+    let old = @load64(m + M_ENTRIES) + 16
+    let ncap = oldcap * 2
+    let nb = alloc(16 + ncap * 24, KIND_SCAN)
+    @store64(m + M_CAP, ncap)
+    @store64(m + M_ENTRIES, nb)
+    @store64(m + 8, 0)
+    @store64(m + M_USED, 0)
+    let mut i = 0
+    while i < oldcap {
+        if @load64(old + i * 24) == 1 {
+            map_set(m, @load64(old + i * 24 + 8), @load64(old + i * 24 + 16))
+        }
+        i += 1
+    }
+}
+
+pub fn map_set(m: Int, k: Int, v: Int) {
+    if (@load64(m + M_USED) + 1) * 4 >= @load64(m + M_CAP) * 3 { map_rehash(m) }
+    let r = map_probe(m, k)
+    let e = @load64(m + M_ENTRIES) + 16
+    if r >= 0 {
+        @store64(e + r * 24 + 16, v)
+        return
+    }
+    let i = -2 - r
+    let fresh = @load64(e + i * 24) == 0
+    @store64(e + i * 24, 1)
+    @store64(e + i * 24 + 8, k)
+    @store64(e + i * 24 + 16, v)
+    @store64(m + 8, @load64(m + 8) + 1)
+    if fresh { @store64(m + M_USED, @load64(m + M_USED) + 1) }
+}
+
+/// Address of the value slot for `k`, or 0 when the key is absent.
+pub fn map_find(m: Int, k: Int) -> Int {
+    let r = map_probe(m, k)
+    if r < 0 { return 0 }
+    return @load64(m + M_ENTRIES) + 16 + r * 24 + 16
+}
+
+pub fn map_find_or_panic(m: Int, k: Int) -> Int {
+    let p = map_find(m, k)
+    if p == 0 { panic_str("map key not found") }
+    return p
+}
+
+pub fn map_has(m: Int, k: Int) -> Bool { return map_find(m, k) != 0 }
+
+pub fn map_delete(m: Int, k: Int) -> Bool {
+    let r = map_probe(m, k)
+    if r < 0 { return false }
+    let e = @load64(m + M_ENTRIES) + 16
+    @store64(e + r * 24, 2)
+    @store64(e + r * 24 + 8, 0)
+    @store64(e + r * 24 + 16, 0)
+    @store64(m + 8, @load64(m + 8) - 1)
+    return true
+}
+
+pub fn map_len(m: Int) -> Int { return @load64(m + 8) }
+
+pub fn map_clear(m: Int) {
+    let cap = @load64(m + M_CAP)
+    let e = @load64(m + M_ENTRIES) + 16
+    let mut i = 0
+    while i < cap {
+        @store64(e + i * 24, 0)
+        @store64(e + i * 24 + 8, 0)
+        @store64(e + i * 24 + 16, 0)
+        i += 1
+    }
+    @store64(m + 8, 0)
+    @store64(m + M_USED, 0)
+}
+
+/// The raw 64-bit word behind any value. Reference values yield their address,
+/// primitives yield the value itself.
+pub fn word_of[T](v: T) -> Int {
+    return @addr(v)
+}
+
+/// Index of the next used slot at or after `i`, or -1.
+pub fn map_next(m: Int, i: Int) -> Int {
+    let cap = @load64(m + M_CAP)
+    let e = @load64(m + M_ENTRIES) + 16
+    let mut k = i
+    while k < cap {
+        if @load64(e + k * 24) == 1 { return k }
+        k += 1
+    }
+    return -1
+}
+
+pub fn map_key_at(m: Int, i: Int) -> Int {
+    return @load64(@load64(m + M_ENTRIES) + 16 + i * 24 + 8)
+}
+pub fn map_val_at(m: Int, i: Int) -> Int {
+    return @load64(@load64(m + M_ENTRIES) + 16 + i * 24 + 16)
+}
+
+// ---------------------------------------------------------- number formatting
+
+pub fn int_to_str(v: Int) -> Str {
+    if v == 0 { return "0" }
+    let mut buf = 0
+    let p = str_alloc(24)
+    let d = p + 16
+    let mut neg = false
+    let mut x = v
+    if x < 0 { neg = true }
+    let mut i = 24
+    while x != 0 {
+        let q = x / 10
+        let r = x - q * 10
+        i -= 1
+        let dig = if_int(r < 0, -r, r)
+        @store8(d + i, 48 + dig)
+        x = q
+    }
+    if neg {
+        i -= 1
+        @store8(d + i, 45)
+    }
+    buf = i
+    let n = 24 - i
+    mcopy(d, d + i, n)
+    @store64(p + 8, n)
+    return @ref[Str](p)
+}
+
+pub fn int_to_hex(v: Int) -> Str {
+    if v == 0 { return "0" }
+    let p = str_alloc(16)
+    let d = p + 16
+    let mut i = 16
+    let mut x = v
+    while x != 0 and i > 0 {
+        let dig = x & 15
+        i -= 1
+        if dig < 10 { @store8(d + i, 48 + dig) } else { @store8(d + i, 87 + dig) }
+        x = (x >> 4) & 0x0FFFFFFFFFFFFFFF
+    }
+    let n = 16 - i
+    mcopy(d, d + i, n)
+    @store64(p + 8, n)
+    return @ref[Str](p)
+}
+
+fn pow10(k: Int) -> Float {
+    if k >= 0 and k <= 22 {
+        let mut r = 1.0
+        let mut i = 0
+        while i < k { r = r * 10.0; i += 1 }
+        return r
+    }
+    if k < 0 { return 1.0 / pow10(-k) }
+    let mut r = 1.0
+    let mut i = 0
+    while i < k { r = r * 10.0; i += 1 }
+    return r
+}
+
+fn fabs(x: Float) -> Float { if x < 0.0 { return -x } return x }
+
+fn floor_log10(x: Float) -> Int {
+    let mut e = 0
+    let mut v = x
+    if v >= 1.0 {
+        while v >= 10.0 { v = v / 10.0; e += 1 }
+    } else {
+        while v < 1.0 { v = v * 10.0; e -= 1 }
+    }
+    return e
+}
+
+/// Shortest decimal form that reads back as exactly the same `Float`.
+pub fn float_to_str(v: Float) -> Str {
+    let bits = @f2bits(v)
+    let expo = (bits >> 52) & 2047
+    let frac = bits & 0xFFFFFFFFFFFFF
+    if expo == 2047 {
+        if frac != 0 {
+            return "nan"
+        }
+        if bits < 0 {
+            return "-inf"
+        }
+        return "inf"
+    }
+    if v == 0.0 {
+        if bits != 0 {
+            return "-0.0"
+        }
+        return "0.0"
+    }
+    let neg = v < 0.0
+    let a = fabs(v)
+    let e = floor_log10(a)
+    let mut mant = 0
+    let mut prec = 1
+    let mut done = false
+    while prec <= 17 and not done {
+        let scaled = a / pow10(e - prec + 1)
+        let r = int(scaled + 0.5)
+        if round_trips(r, e - prec + 1, a) {
+            mant = r
+            done = true
+        } else {
+            mant = r
+            prec += 1
+        }
+    }
+    let dstr = digits_to_str_pretty(mant, e)
+    if neg {
+        return "-" + dstr
+    }
+    return dstr
+}
+
+fn round_trips(mant: Int, exp10: Int, target: Float) -> Bool {
+    return float(mant) * pow10(exp10) == target
+}
+
+fn digits_to_str_pretty(mant: Int, e: Int) -> Str {
+    let ds = int_to_str(mant)
+    let nd = len(ds)
+    if e >= 0 and e < 17 {
+        if nd <= e + 1 {
+            let mut r = ds
+            let mut i = nd
+            while i <= e {
+                r = r + "0"
+                i += 1
+            }
+            return r + ".0"
+        }
+        return ds[0..e + 1] + "." + ds[e + 1..nd]
+    }
+    if e < 0 and e > -5 {
+        let mut r = "0."
+        let mut i = -1
+        while i > e {
+            r = r + "0"
+            i -= 1
+        }
+        return r + ds
+    }
+    let head = if_str(nd == 1, ds + ".0", ds[0..1] + "." + ds[1..nd])
+    return head + "e" + int_to_str(e)
+}
+
+// ------------------------------------------------------------------- parsing
+
+pub fn parse_int(s: Str) -> ?Int {
+    let n = len(s)
+    if n == 0 {
+        return nil
+    }
+    let p = @addr(s) + 16
+    let mut i = 0
+    let mut neg = false
+    let c0 = @load8(p)
+    if c0 == 45 {
+        neg = true
+        i = 1
+    } else if c0 == 43 {
+        i = 1
+    }
+    if i >= n {
+        return nil
+    }
+    let mut v = 0
+    while i < n {
+        let c = @load8(p + i)
+        if c < 48 or c > 57 {
+            return nil
+        }
+        v = v * 10 + (c - 48)
+        i += 1
+    }
+    if neg {
+        return -v
+    }
+    return v
+}
+
+pub fn parse_float(s: Str) -> ?Float {
+    let n = len(s)
+    if n == 0 {
+        return nil
+    }
+    let p = @addr(s) + 16
+    let mut i = 0
+    let mut neg = false
+    let c0 = @load8(p)
+    if c0 == 45 {
+        neg = true
+        i = 1
+    } else if c0 == 43 {
+        i = 1
+    }
+    let mut mant = 0
+    let mut ndig = 0
+    let mut exp = 0
+    let mut dot = false
+    let mut seen = false
+    while i < n {
+        let c = @load8(p + i)
+        if c >= 48 and c <= 57 {
+            seen = true
+            if ndig < 18 {
+                mant = mant * 10 + (c - 48)
+                ndig += 1
+                if dot {
+                    exp -= 1
+                }
+            } else if not dot {
+                exp += 1
+            }
+            i += 1
+        } else if c == 46 and not dot {
+            dot = true
+            i += 1
+        } else if c == 101 or c == 69 {
+            let mut j = i + 1
+            let mut eneg = false
+            if j < n {
+                let es = @load8(p + j)
+                if es == 45 {
+                    eneg = true
+                    j += 1
+                } else if es == 43 {
+                    j += 1
+                }
+            }
+            let mut ev = 0
+            let mut any = false
+            while j < n {
+                let d = @load8(p + j)
+                if d < 48 or d > 57 {
+                    return nil
+                }
+                ev = ev * 10 + (d - 48)
+                any = true
+                j += 1
+            }
+            if not any {
+                return nil
+            }
+            if eneg {
+                exp -= ev
+            } else {
+                exp += ev
+            }
+            i = n
+        } else {
+            return nil
+        }
+    }
+    if not seen {
+        return nil
+    }
+    let mut r = float(mant) * pow10(exp)
+    if neg {
+        r = -r
+    }
+    return r
+}
+
+pub fn str_to_int(s: Str) -> ?Int { return parse_int(s) }
+pub fn str_to_float(s: Str) -> ?Float { return parse_float(s) }
+
+// ------------------------------------------------------- generic stringifying
+
+const TD_KIND: Int = 0
+const TD_NAME: Int = 8
+const TD_NSUB: Int = 16
+const TD_SUBS: Int = 24
+const TD_NAMES: Int = 32
+const TD_AUX: Int = 40
+const TD_TOSTR: Int = 48
+
+const K_VOID: Int = 0
+const K_INT: Int = 1
+const K_FLOAT: Int = 2
+const K_BOOL: Int = 3
+const K_BYTE: Int = 4
+const K_STR: Int = 5
+const K_LIST: Int = 6
+const K_MAP: Int = 7
+const K_OPT: Int = 8
+const K_RES: Int = 9
+const K_FN: Int = 10
+const K_RANGE: Int = 11
+const K_STRUCT: Int = 12
+const K_ENUM: Int = 13
+const K_ERROR: Int = 14
+
+fn sub_at(d: Int, i: Int) -> Int {
+    return @load64(@load64(d + TD_SUBS) + i * 8)
+}
+fn name_at(d: Int, i: Int) -> Str {
+    return @ref[Str](@load64(@load64(d + TD_NAMES) + i * 8))
+}
+
+pub fn any_to_str(w: Int, d: Int) -> Str {
+    let ts = @load64(d + TD_TOSTR)
+    if ts != 0 {
+        let f = @ref[fn(Int) -> Str](ts)
+        return f(w)
+    }
+    let k = @load64(d + TD_KIND)
+    if k == K_INT { return int_to_str(w) }
+    if k == K_BYTE { return int_to_str(w) }
+    if k == K_BOOL { if w == 0 { return "false" } return "true" }
+    if k == K_FLOAT { return float_to_str(@bits2f(w)) }
+    if k == K_STR { return @ref[Str](w) }
+    if k == K_VOID { return "void" }
+    if k == K_FN { return "<fn>" }
+    if k == K_RANGE {
+        return int_to_str(@load64(w + 16)) + ".." + int_to_str(@load64(w + 24))
+    }
+    if k == K_ERROR {
+        if w == 0 { return "nil" }
+        return "error: " + @ref[Str](@load64(w + 16))
+    }
+    if k == K_OPT {
+        if w == 0 { return "nil" }
+        let inner = sub_at(d, 0)
+        if @load64(d + TD_AUX) == 1 { return any_to_str(@load64(w + 16), inner) }
+        return any_to_str(w, inner)
+    }
+    if k == K_RES {
+        if @load64(w + 16) == 0 {
+            let inner = sub_at(d, 0)
+            if @load64(inner + TD_KIND) == K_VOID { return "ok" }
+            return "ok(" + any_to_str(@load64(w + 24), inner) + ")"
+        }
+        let e = @load64(w + 24)
+        return "error: " + @ref[Str](@load64(e + 16))
+    }
+    if k == K_LIST {
+        let ed = sub_at(d, 0)
+        let n = @load64(w + 8)
+        let mut r = "["
+        let mut i = 0
+        while i < n {
+            if i > 0 { r = r + ", " }
+            r = r + any_to_str(@load64(@load64(w + L_DATA) + 16 + i * 8), ed)
+            i += 1
+        }
+        return r + "]"
+    }
+    if k == K_MAP {
+        let kd = sub_at(d, 0)
+        let vd = sub_at(d, 1)
+        let mut r = "{{"
+        let mut i = map_next(w, 0)
+        let mut first = true
+        while i >= 0 {
+            if not first { r = r + ", " }
+            first = false
+            r = r + any_to_str(map_key_at(w, i), kd) + ": " + any_to_str(map_val_at(w, i), vd)
+            i = map_next(w, i + 1)
+        }
+        return r + "}}"
+    }
+    if k == K_STRUCT {
+        let n = @load64(d + TD_NSUB)
+        let mut r = @ref[Str](@load64(d + TD_NAME)) + "{{"
+        let mut i = 0
+        while i < n {
+            if i > 0 { r = r + ", " }
+            r = r + name_at(d, i) + ": " + any_to_str(@load64(w + 16 + i * 8), sub_at(d, i))
+            i += 1
+        }
+        return r + "}}"
+    }
+    if k == K_ENUM {
+        let prim = @load64(d + TD_AUX) == 1
+        let tag = if_int(prim, w, @load16(w + 6))
+        let nm = @ref[Str](@load64(d + TD_NAME))
+        let vn = name_at(d, tag)
+        if prim { return nm + "." + vn }
+        let pairs = @load64(d + TD_SUBS)
+        let arr = @load64(pairs + tag * 16)
+        let cnt = @load64(pairs + tag * 16 + 8)
+        if cnt == 0 { return nm + "." + vn }
+        let mut r = nm + "." + vn + "("
+        let mut i = 0
+        while i < cnt {
+            if i > 0 { r = r + ", " }
+            r = r + any_to_str(@load64(w + 16 + i * 8), @load64(arr + i * 8))
+            i += 1
+        }
+        return r + ")"
+    }
+    return "<?>"
+}
+
+pub fn any_eq(a: Int, b: Int, d: Int) -> Bool {
+    let k = @load64(d + TD_KIND)
+    if k == K_INT or k == K_BYTE or k == K_BOOL or k == K_VOID { return a == b }
+    if k == K_FLOAT { return @bits2f(a) == @bits2f(b) }
+    if k == K_STR {
+        if a == 0 or b == 0 { return a == b }
+        return str_eq(@ref[Str](a), @ref[Str](b))
+    }
+    if a == b { return true }
+    if a == 0 or b == 0 { return false }
+    if k == K_OPT {
+        let inner = sub_at(d, 0)
+        if @load64(d + TD_AUX) == 1 { return any_eq(@load64(a + 16), @load64(b + 16), inner) }
+        return any_eq(a, b, inner)
+    }
+    if k == K_RES {
+        let ta = @load64(a + 16)
+        if ta != @load64(b + 16) { return false }
+        if ta == 0 { return any_eq(@load64(a + 24), @load64(b + 24), sub_at(d, 0)) }
+        return str_eq(@ref[Str](@load64(@load64(a + 24) + 16)),
+                      @ref[Str](@load64(@load64(b + 24) + 16)))
+    }
+    if k == K_ERROR {
+        return str_eq(@ref[Str](@load64(a + 16)), @ref[Str](@load64(b + 16)))
+    }
+    if k == K_LIST {
+        let n = @load64(a + 8)
+        if n != @load64(b + 8) { return false }
+        let ed = sub_at(d, 0)
+        let da = @load64(a + L_DATA) + 16
+        let db = @load64(b + L_DATA) + 16
+        let mut i = 0
+        while i < n {
+            if not any_eq(@load64(da + i * 8), @load64(db + i * 8), ed) { return false }
+            i += 1
+        }
+        return true
+    }
+    if k == K_MAP {
+        if @load64(a + 8) != @load64(b + 8) { return false }
+        let vd = sub_at(d, 1)
+        let mut i = map_next(a, 0)
+        while i >= 0 {
+            let p = map_find(b, map_key_at(a, i))
+            if p == 0 { return false }
+            if not any_eq(map_val_at(a, i), @load64(p), vd) { return false }
+            i = map_next(a, i + 1)
+        }
+        return true
+    }
+    if k == K_STRUCT {
+        let n = @load64(d + TD_NSUB)
+        let mut i = 0
+        while i < n {
+            if not any_eq(@load64(a + 16 + i * 8), @load64(b + 16 + i * 8), sub_at(d, i)) { return false }
+            i += 1
+        }
+        return true
+    }
+    if k == K_ENUM {
+        if @load64(d + TD_AUX) == 1 { return a == b }
+        let ta = @load16(a + 6)
+        if ta != @load16(b + 6) { return false }
+        let pairs = @load64(d + TD_SUBS)
+        let arr = @load64(pairs + ta * 16)
+        let cnt = @load64(pairs + ta * 16 + 8)
+        let mut i = 0
+        while i < cnt {
+            if not any_eq(@load64(a + 16 + i * 8), @load64(b + 16 + i * 8), @load64(arr + i * 8)) { return false }
+            i += 1
+        }
+        return true
+    }
+    if k == K_RANGE {
+        return @load64(a + 16) == @load64(b + 16) and @load64(a + 24) == @load64(b + 24)
+    }
+    return a == b
+}
+
+pub fn any_hash(w: Int, d: Int) -> Int {
+    let k = @load64(d + TD_KIND)
+    if k == K_STR {
+        if w == 0 { return 0 }
+        return str_hash(@ref[Str](w))
+    }
+    if k == K_INT or k == K_BYTE or k == K_BOOL or k == K_ENUM or k == K_FLOAT {
+        let mut h = w
+        h = (h ^ (h >> 33)) * -49064778989728563
+        h = (h ^ (h >> 29)) * -4265267296055464877
+        return (h ^ ((h >> 32) & 0xFFFFFFFF)) & 0x7FFFFFFFFFFFFFFF
+    }
+    if k == K_LIST {
+        let ed = sub_at(d, 0)
+        let n = @load64(w + 8)
+        let mut h = 17
+        let mut i = 0
+        while i < n {
+            h = h * 31 + any_hash(@load64(@load64(w + L_DATA) + 16 + i * 8), ed)
+            i += 1
+        }
+        return h & 0x7FFFFFFFFFFFFFFF
+    }
+    if k == K_STRUCT {
+        let n = @load64(d + TD_NSUB)
+        let mut h = 19
+        let mut i = 0
+        while i < n {
+            h = h * 31 + any_hash(@load64(w + 16 + i * 8), sub_at(d, i))
+            i += 1
+        }
+        return h & 0x7FFFFFFFFFFFFFFF
+    }
+    return w & 0x7FFFFFFFFFFFFFFF
+}
+
+// ----------------------------------------------------------------- output
+
+pub fn print_str(s: Str) {
+    let n = len(s)
+    if n == 0 { return }
+    let mut off = 0
+    while off < n {
+        let w = sys_write(1, @addr(s) + 16 + off, n - off)
+        if w <= 0 { return }
+        off += w
+    }
+}
+
+pub fn eprint_str(s: Str) {
+    let n = len(s)
+    if n == 0 { return }
+    let mut off = 0
+    while off < n {
+        let w = sys_write(2, @addr(s) + 16 + off, n - off)
+        if w <= 0 { return }
+        off += w
+    }
+}
+
+// ------------------------------------------------------------ test harness
+
+pub fn test_begin(name: Str) {
+    rts(RT_TESTS_RUN, rtl(RT_TESTS_RUN) + 1)
+    rts(RT_TEST_NAME, @addr(name))
+    print_str("test " + name + " ... ")
+}
+
+pub fn test_pass() {
+    print_str("ok\n")
+}
+
+pub fn test_report() -> Int {
+    let run = rtl(RT_TESTS_RUN)
+    let fail = rtl(RT_TESTS_FAIL)
+    print_str("\n" + int_to_str(run - fail) + " passed, " + int_to_str(fail) +
+              " failed, " + int_to_str(run) + " total\n")
+    if fail > 0 { return 1 }
+    return 0
+}
