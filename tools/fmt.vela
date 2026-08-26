@@ -1,0 +1,771 @@
+// tools/fmt.vela — the canonical Vela formatter.
+//
+// The formatter walks the token stream with knowledge of Vela's grammar so it
+// can tell a block `{` from a struct or map literal, then re-prints with one
+// canonical style:
+//
+//   * four spaces of indentation, never tabs
+//   * one statement per line, no semicolons
+//   * `} else {` on one line
+//   * a single space around binary operators, none after unary ones
+//   * at most one blank line between items
+//   * a bracketed group is expanded across lines exactly when the author put a
+//     newline right after the opening bracket, so wrapping stays under your
+//     control while everything else is normalised
+//
+// Running the formatter twice always produces the same text as running it once.
+
+use ./lex
+
+struct F {
+    toks: [lex.Token],
+    i: Int,
+    out: Str,
+    line: Str,
+    indent: Int,
+    pending_blank: Bool,
+    prev: Str,
+}
+
+/// Format Vela source text.
+pub fn format(src: Str) -> !Str {
+    let toks = lex.tokenize(src)?
+    let f = F{ toks: toks, i: 0, out: "", line: "", indent: 0, pending_blank: false, prev: "" }
+    f.skip_newlines_leading()
+    while not f.at_eof() {
+        f.decl()
+    }
+    f.flush()
+    let mut s = f.out
+    while s.ends_with("\n\n") {
+        s = s[0..len(s) - 1]
+    }
+    if not s.ends_with("\n") and len(s) > 0 {
+        s = s + "\n"
+    }
+    return ok(s)
+}
+
+// ------------------------------------------------------------- token access
+
+fn F.cur(self) -> lex.Token {
+    if self.i >= len(self.toks) {
+        return self.toks[len(self.toks) - 1]
+    }
+    return self.toks[self.i]
+}
+
+fn F.peek(self, k: Int) -> lex.Token {
+    let j = self.i + k
+    if j >= len(self.toks) {
+        return self.toks[len(self.toks) - 1]
+    }
+    return self.toks[j]
+}
+
+fn F.at_eof(self) -> Bool {
+    return self.cur().is_eof()
+}
+
+fn F.adv(self) -> lex.Token {
+    let t = self.cur()
+    if self.i < len(self.toks) - 1 {
+        self.i += 1
+    }
+    if not t.is_newline() and not t.is_comment() {
+        self.prev = t.text()
+    }
+    return t
+}
+
+/// True when a `{` here opens a map type rather than a block.
+fn F.type_brace(self) -> Bool {
+    let p = self.prev
+    return p == "->" or p == ":" or p == "," or p == "[" or p == "(" or
+           p == "{{" or p == "?" or p == "!" or p == "="
+}
+
+/// Consume a balanced `{ ... }` as part of a type.
+fn F.type_group(self) {
+    let mut d = 0
+    while not self.at_eof() {
+        let t = self.cur()
+        if t.is_newline() {
+            self.adv()
+            continue
+        }
+        if t.is_punct("{{") {
+            d += 1
+        }
+        if t.is_punct("}}") {
+            d -= 1
+        }
+        self.expr_token(0)
+        if d == 0 {
+            return
+        }
+    }
+}
+
+/// The next token that is not a newline.
+fn F.next_significant(self, from: Int) -> lex.Token {
+    let mut j = from
+    while j < len(self.toks) {
+        let t = self.toks[j]
+        if not t.is_newline() {
+            return t
+        }
+        j += 1
+    }
+    return self.toks[len(self.toks) - 1]
+}
+
+// ------------------------------------------------------------ output buffer
+
+fn F.emit(self, s: Str) {
+    self.line = self.line + s
+}
+
+fn F.emit_space(self) {
+    if len(self.line) > 0 and not self.line.ends_with(" ") {
+        self.line = self.line + " "
+    }
+}
+
+fn F.flush(self) {
+    let t = rstrip(self.line)
+    if len(t) > 0 {
+        if self.pending_blank and len(self.out) > 0 {
+            self.out = self.out + "\n"
+        }
+        self.out = self.out + "    ".repeat(self.indent) + t + "\n"
+        self.pending_blank = false
+    }
+    self.line = ""
+}
+
+fn rstrip(s: Str) -> Str {
+    let mut n = len(s)
+    while n > 0 and (s[n - 1] == ' ' or s[n - 1] == '\t') {
+        n -= 1
+    }
+    return s[0..n]
+}
+
+/// End the current line and remember whether a blank line should follow.
+fn F.newline(self) {
+    self.flush()
+}
+
+fn F.blank(self) {
+    if len(self.out) > 0 {
+        self.pending_blank = true
+    }
+}
+
+fn F.skip_newlines_leading(self) {
+    while self.cur().is_newline() {
+        self.adv()
+    }
+}
+
+/// Consume newline tokens, recording whether the author left a blank line.
+fn F.eat_newlines(self) {
+    let mut sawblank = false
+    while self.cur().is_newline() {
+        if self.cur().blanks() > 0 {
+            sawblank = true
+        }
+        self.adv()
+    }
+    if sawblank {
+        self.blank()
+    }
+}
+
+// ----------------------------------------------------------- comment output
+
+fn F.take_comments_inline(self) -> Bool {
+    let t = self.cur()
+    if t.is_comment() and not t.bol {
+        self.emit_space()
+        self.emit(t.text())
+        self.adv()
+        return true
+    }
+    return false
+}
+
+fn F.leading_comments(self) {
+    while true {
+        let t = self.cur()
+        if t.is_comment() {
+            self.emit(t.text())
+            self.adv()
+            self.newline()
+            self.eat_newlines()
+            continue
+        }
+        return
+    }
+}
+
+// ---------------------------------------------------------- declarations
+
+fn F.decl(self) {
+    self.eat_newlines()
+    self.leading_comments()
+    if self.at_eof() {
+        return
+    }
+    let t = self.cur()
+    if t.is_kw("use") {
+        self.use_decl()
+        return
+    }
+    if t.is_kw("const") or t.is_kw("type") {
+        self.simple_line()
+        return
+    }
+    if t.is_kw("pub") {
+        self.emit("pub")
+        self.emit_space()
+        self.adv()
+        self.decl_body()
+        return
+    }
+    self.decl_body()
+}
+
+fn F.decl_body(self) {
+    let t = self.cur()
+    if t.is_kw("fn") {
+        self.fn_decl()
+        return
+    }
+    if t.is_kw("struct") or t.is_kw("enum") {
+        self.type_decl()
+        return
+    }
+    if t.is_kw("test") {
+        self.emit("test")
+        self.emit_space()
+        self.adv()
+        self.emit(self.adv().text())
+        self.emit_space()
+        self.block()
+        self.newline()
+        return
+    }
+    self.simple_line()
+}
+
+/// `use a/b/c as d` — the slashes are path separators, not division.
+fn F.use_decl(self) {
+    self.emit("use")
+    self.emit_space()
+    self.adv()
+    while not self.at_eof() and not self.cur().is_newline() {
+        if self.take_comments_inline() {
+            continue
+        }
+        let t = self.adv()
+        if t.is_punct("/") or t.is_punct(".") {
+            self.line = rstrip(self.line)
+            self.emit(t.text())
+            continue
+        }
+        if t.is_kw("as") {
+            self.emit_space()
+            self.emit("as")
+            self.emit_space()
+            continue
+        }
+        if not ends_with_open(self.line) and not self.line.ends_with("/") and
+           not self.line.ends_with(".") {
+            self.emit_space()
+        }
+        self.emit(t.text())
+    }
+    self.newline()
+}
+
+/// A declaration that occupies a single logical line (`const`, `type`).
+fn F.simple_line(self) {
+    while not self.at_eof() and not self.cur().is_newline() {
+        if self.take_comments_inline() {
+            continue
+        }
+        self.expr_token(0)
+    }
+    self.newline()
+}
+
+fn F.fn_decl(self) {
+    self.emit("fn")
+    self.emit_space()
+    self.adv()
+    // name, optional receiver, generics, parameter list, return type
+    while not self.at_eof() {
+        if self.cur().is_newline() {
+            self.adv()
+            continue
+        }
+        if self.cur().is_punct("{{") {
+            if self.type_brace() {
+                self.type_group()
+                continue
+            }
+            break
+        }
+        self.expr_token(0)
+    }
+    self.emit_space()
+    self.block()
+    self.newline()
+}
+
+fn F.type_decl(self) {
+    self.emit(self.adv().text())          // struct / enum
+    self.emit_space()
+    while not self.at_eof() and not self.cur().is_punct("{{") {
+        if self.cur().is_newline() {
+            self.adv()
+            continue
+        }
+        self.expr_token(0)
+    }
+    self.emit_space()
+    self.emit("{{")
+    self.adv()
+    self.newline()
+    self.indent += 1
+    self.eat_newlines()
+    while not self.at_eof() and not self.cur().is_punct("}}") {
+        self.leading_comments()
+        if self.cur().is_punct("}}") {
+            break
+        }
+        // one member per line, always comma-terminated
+        while not self.at_eof() and not self.cur().is_newline() and
+              not self.cur().is_punct("}}") {
+            if self.cur().is_punct(",") {
+                self.adv()
+                break
+            }
+            if self.take_comments_inline() {
+                continue
+            }
+            if self.cur().is_punct("{{") and self.type_brace() {
+                self.type_group()
+                continue
+            }
+            self.expr_token(0)
+        }
+        self.emit(",")
+        while self.take_comments_inline() {
+        }
+        self.newline()
+        self.eat_newlines()
+    }
+    self.indent -= 1
+    if self.cur().is_punct("}}") {
+        self.adv()
+    }
+    self.emit("}}")
+    self.newline()
+}
+
+// ---------------------------------------------------------------- blocks
+
+fn F.block(self) {
+    self.emit("{{")
+    if not self.cur().is_punct("{{") {
+        // defensive: caller guaranteed a `{`
+    }
+    self.adv()
+    // empty block?
+    let nxt = self.next_significant(self.i)
+    if nxt.is_punct("}}") {
+        while self.cur().is_newline() {
+            self.adv()
+        }
+        self.adv()
+        self.emit("}}")
+        return
+    }
+    self.newline()
+    self.indent += 1
+    self.eat_newlines()
+    while not self.at_eof() and not self.cur().is_punct("}}") {
+        self.stmt()
+        self.eat_newlines()
+    }
+    self.indent -= 1
+    if self.cur().is_punct("}}") {
+        self.adv()
+    }
+    self.emit("}}")
+}
+
+// ------------------------------------------------------------- statements
+
+fn F.stmt(self) {
+    self.leading_comments()
+    if self.at_eof() or self.cur().is_punct("}}") {
+        return
+    }
+    let t = self.cur()
+    if t.is_kw("if") {
+        self.if_stmt()
+        return
+    }
+    if t.is_kw("while") {
+        self.emit("while")
+        self.emit_space()
+        self.adv()
+        self.expr(true)
+        self.emit_space()
+        self.block()
+        self.after_stmt()
+        return
+    }
+    if t.is_kw("for") {
+        self.emit("for")
+        self.emit_space()
+        self.adv()
+        self.expr2(true, false)
+        self.emit_space()
+        self.block()
+        self.after_stmt()
+        return
+    }
+    if t.is_kw("match") {
+        self.match_expr()
+        self.after_stmt()
+        return
+    }
+    if t.is_punct("{{") {
+        self.block()
+        self.after_stmt()
+        return
+    }
+    // a plain statement: let / return / assignment / call
+    self.expr(false)
+    self.after_stmt()
+}
+
+fn F.after_stmt(self) {
+    while self.cur().is_punct(";") {
+        self.adv()
+    }
+    while self.take_comments_inline() {
+    }
+    self.newline()
+}
+
+fn F.if_stmt(self) {
+    self.emit("if")
+    self.emit_space()
+    self.adv()
+    if self.cur().is_kw("let") {
+        self.emit("let")
+        self.emit_space()
+        self.adv()
+    }
+    self.expr(true)
+    self.emit_space()
+    self.block()
+    // `} else {` stays on one line
+    let save = self.i
+    let mut j = self.i
+    while j < len(self.toks) and self.toks[j].is_newline() {
+        j += 1
+    }
+    if j < len(self.toks) and self.toks[j].is_kw("else") {
+        self.i = j
+        self.emit_space()
+        self.emit("else")
+        self.emit_space()
+        self.adv()
+        if self.cur().is_kw("if") {
+            self.if_stmt()
+            return
+        }
+        self.block()
+        self.after_stmt()
+        return
+    }
+    self.i = save
+    self.after_stmt()
+}
+
+fn F.match_expr(self) {
+    self.emit("match")
+    self.emit_space()
+    self.adv()
+    self.expr(true)
+    self.emit_space()
+    self.emit("{{")
+    self.adv()
+    self.newline()
+    self.indent += 1
+    self.eat_newlines()
+    while not self.at_eof() and not self.cur().is_punct("}}") {
+        self.leading_comments()
+        if self.cur().is_punct("}}") {
+            break
+        }
+        // pattern => body
+        while not self.at_eof() and not self.cur().is_punct("=>") {
+            if self.cur().is_newline() {
+                self.adv()
+                continue
+            }
+            self.expr_token(0)
+        }
+        self.emit_space()
+        self.emit("=>")
+        self.emit_space()
+        self.adv()
+        if self.cur().is_punct("{{") {
+            self.block()
+        } else {
+            self.expr(false)
+        }
+        if self.cur().is_punct(",") {
+            self.adv()
+        }
+        self.emit(",")
+        while self.take_comments_inline() {
+        }
+        self.newline()
+        self.eat_newlines()
+    }
+    self.indent -= 1
+    if self.cur().is_punct("}}") {
+        self.adv()
+    }
+    self.emit("}}")
+}
+
+// ------------------------------------------------------------ expressions
+
+/// Format one expression. `no_struct` marks the header of `if`/`while`/`for`/
+/// `match`, where a `{` at depth zero begins a block rather than a literal.
+fn F.expr(self, no_struct: Bool) {
+    self.expr2(no_struct, true)
+}
+
+/// `stop_comma` is false in a `for` header, where `for i, x in xs` puts a
+/// comma at bracket depth zero.
+fn F.expr2(self, no_struct: Bool, stop_comma: Bool) {
+    let mut depth = 0
+    while not self.at_eof() {
+        let t = self.cur()
+        if t.is_newline() {
+            if depth == 0 {
+                return
+            }
+            self.adv()
+            continue
+        }
+        if t.is_comment() {
+            if depth == 0 {
+                return
+            }
+            self.emit_space()
+            self.emit(t.text())
+            self.adv()
+            continue
+        }
+        if t.is_punct(";") and depth == 0 {
+            return
+        }
+        if t.is_punct(",") and depth == 0 and stop_comma {
+            return
+        }
+        if t.is_punct("}}") or t.is_punct(")") or t.is_punct("]") {
+            if depth == 0 {
+                return
+            }
+            depth -= 1
+            self.expr_token(0)
+            continue
+        }
+        if t.is_punct("{{") {
+            if depth == 0 and no_struct {
+                return
+            }
+            depth += 1
+            self.expr_token(0)
+            continue
+        }
+        if t.is_punct("(") or t.is_punct("[") {
+            depth += 1
+            self.expr_token(0)
+            continue
+        }
+        if t.is_kw("match") and depth == 0 {
+            self.match_expr()
+            continue
+        }
+        self.expr_token(0)
+    }
+}
+
+/// True when the previous emitted character means the next `-`/`(`/`[` is in
+/// prefix position.
+fn F.prev_is_operand(self) -> Bool {
+    let s = rstrip(self.line)
+    if len(s) == 0 {
+        return false
+    }
+    let c = s[len(s) - 1]
+    if c == ')' or c == ']' or c == '"' or c == '\'' {
+        return true
+    }
+    if c.is_alnum() or c == '_' {
+        // keywords that are not operands
+        let words = ["return", "and", "or", "not", "in", "if", "while", "for",
+                     "match", "let", "mut", "else", "as", "const", "use"]
+        let mut j = len(s)
+        while j > 0 and (s[j - 1].is_alnum() or s[j - 1] == '_') {
+            j -= 1
+        }
+        return not words.contains(s[j..len(s)])
+    }
+    return false
+}
+
+const BINARY_OPS: [Str] = ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">",
+    ">=", "<<", ">>", "&", "^", "=", "+=", "-=", "*=", "/=", "%=", "->", "=>",
+    "??"]
+
+fn F.expr_token(self, _depth: Int) {
+    let t = self.adv()
+    let txt = t.text()
+
+    if t.is_punct(".") or t.is_punct("..") or t.is_punct("..=") {
+        self.line = rstrip(self.line)
+        self.emit(txt)
+        return
+    }
+    if t.is_punct(",") {
+        self.emit(",")
+        self.emit_space()
+        return
+    }
+    if t.is_punct(":") {
+        self.emit(":")
+        self.emit_space()
+        return
+    }
+    if t.is_punct("(") or t.is_punct("[") {
+        if not self.prev_is_operand() and not self.line.ends_with("@") {
+            if len(rstrip(self.line)) > 0 and not ends_with_open(self.line) {
+                self.emit_space()
+            }
+        }
+        self.emit(txt)
+        return
+    }
+    if t.is_punct("{{") {
+        if len(rstrip(self.line)) > 0 and not ends_with_open(self.line) and
+           not self.prev_is_operand() {
+            self.emit_space()
+        }
+        self.emit("{{")
+        return
+    }
+    if t.is_punct(")") or t.is_punct("]") or t.is_punct("}}") {
+        self.line = rstrip(self.line)
+        self.emit(txt)
+        return
+    }
+    if t.is_punct("?") or t.is_punct("!") {
+        // postfix `?` binds tight; `!T` and `?T` in types are prefix
+        if self.prev_is_operand() and t.is_punct("?") {
+            self.emit("?")
+            return
+        }
+        self.maybe_space_before()
+        self.emit(txt)
+        return
+    }
+    if t.is_punct("@") {
+        self.maybe_space_before()
+        self.emit("@")
+        return
+    }
+    if t.is_punct("~") {
+        self.maybe_space_before()
+        self.emit("~")
+        return
+    }
+    if t.is_punct("|") {
+        // lambda delimiter or bitwise-or, decided by operand position
+        if self.prev_is_operand() {
+            self.emit_space()
+            self.emit("|")
+            self.emit_space()
+        } else {
+            self.maybe_space_before()
+            self.emit("|")
+        }
+        return
+    }
+    if t.is_punct("-") and not self.prev_is_operand() {
+        self.maybe_space_before()
+        self.emit("-")
+        return
+    }
+    if BINARY_OPS.contains(txt) {
+        self.emit_space()
+        self.emit(txt)
+        self.emit_space()
+        return
+    }
+    if t.is_kw("not") {
+        self.maybe_space_before()
+        self.emit("not")
+        self.emit_space()
+        return
+    }
+    if t.is_kw("and") or t.is_kw("or") or t.is_kw("in") or t.is_kw("as") {
+        self.emit_space()
+        self.emit(txt)
+        self.emit_space()
+        return
+    }
+    // identifiers, literals, keywords
+    self.maybe_space_before()
+    self.emit(txt)
+    if t.is_kw("let") or t.is_kw("mut") or t.is_kw("return") or t.is_kw("use") or
+       t.is_kw("const") or t.is_kw("pub") or t.is_kw("type") {
+        self.emit_space()
+    }
+}
+
+fn ends_with_open(s: Str) -> Bool {
+    if len(s) == 0 {
+        return true
+    }
+    let c = s[len(s) - 1]
+    return c == '(' or c == '[' or c == '{' or c == '.' or c == '@' or
+           c == '~' or c == '!' or c == ' '
+}
+
+fn F.maybe_space_before(self) {
+    if len(self.line) == 0 {
+        return
+    }
+    if ends_with_open(self.line) {
+        return
+    }
+    let c = self.line[len(self.line) - 1]
+    if c == '-' and not self.prev_is_operand() {
+        return
+    }
+    self.emit_space()
+}

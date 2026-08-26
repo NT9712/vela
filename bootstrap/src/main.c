@@ -340,7 +340,7 @@ int main(int argc, char **argv) {
                 if (d->insts.len) g_unit.entry = VEC_AT(&d->insts, FnInst, 0);
             }
         }
-        if (!g_unit.entry) {
+        if (!g_unit.entry && !opt_check_only) {
             Diag *d = diag_add(DIAG_ERROR, NOSPAN, "`%s` has no `main` function", input);
             diag_note(d, NOSPAN, "help: add\n       fn main() {\n           println(\"hello\")\n       }");
         }

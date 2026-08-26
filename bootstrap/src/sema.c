@@ -171,6 +171,8 @@ static const char *suggest_in_scope(Scope *s, const char *name) {
 
 static Type *struct_instance(Decl *d, Vec *targs, Span sp);
 static Type *resolve_type(TypeExpr *te, Module *m, Subst *sub);
+static Module *find_used_module(Module *m, const char *alias);
+static Decl *find_type_decl(Module *m, const char *name);
 
 static Decl *find_type_decl(Module *m, const char *name) {
     for (int i = 0; i < m->decls.len; i++) {
@@ -218,6 +220,33 @@ static Type *resolve_type(TypeExpr *te, Module *m, Subst *sub) {
             return ty_fn(ps, te->sub ? resolve_type(te->sub, m, sub) : ty_void);
         }
         case TE_NAME: {
+            if (te->modname) {
+                Module *om = find_used_module(m, te->modname);
+                if (!om) {
+                    serr(te->span, "no module `%s` is in scope", te->modname);
+                    return ty_int;
+                }
+                Decl *d = find_type_decl(om, te->name);
+                if (!d) {
+                    serr(te->span, "module `%s` has no type `%s`", te->modname, te->name);
+                    return ty_int;
+                }
+                if (!d->is_pub && om != m) {
+                    serr(te->span, "type `%s.%s` is private", te->modname, te->name);
+                }
+                if (d->kind == D_ALIAS) return resolve_type(d->texpr, d->mod, NULL);
+                Vec args; memset(&args, 0, sizeof args);
+                for (int i = 0; i < te->args.len; i++)
+                    vec_push(&args, resolve_type(VEC_AT(&te->args, TypeExpr, i), m, sub));
+                if (args.len != d->generics.len) {
+                    serr(te->span, "`%s.%s` takes %d type argument%s, found %d",
+                         te->modname, te->name, d->generics.len,
+                         d->generics.len == 1 ? "" : "s", args.len);
+                    while (args.len < d->generics.len) vec_push(&args, ty_int);
+                    args.len = d->generics.len;
+                }
+                return struct_instance(d, &args, te->span);
+            }
             Type *g = subst_get(sub, te->name);
             if (g) return g;
             if (sub) {
@@ -869,6 +898,11 @@ static void check_pattern(Pattern *p, Type *subject) {
                 serr(p->span, "pattern is for enum `%s` but the value has type `%s`",
                      p->tyname, ty_str_of(subject));
                 break;
+            }
+            if (p->modname) {
+                Module *om = find_used_module(cur_mod, p->modname);
+                if (!om || (subject->decl && subject->decl->mod != om))
+                    serr(p->span, "`%s.%s` is not the type of this value", p->modname, p->tyname);
             }
             int v = enum_variant_index(subject, p->name);
             if (v < 0) {
@@ -1781,6 +1815,20 @@ static Type *check_expr(Expr *e, Type *want) {
             Type *subj = check_expr(e->a, NULL);
             Type *res = want;
             int is_expr = 1;
+            int stmt_pos = e->is_static;
+            /* A block arm yields the value of its final expression, so
+               `=> { let t = ...; t * 2 }` works like `=> expr`. */
+            if (!stmt_pos) {
+                for (int i = 0; i < e->list.len; i++) {
+                    MatchArm *a = VEC_AT(&e->list, MatchArm, i);
+                    if (a->body || !a->block || !a->block->list.len) continue;
+                    Stmt *last = VEC_AT(&a->block->list, Stmt, a->block->list.len - 1);
+                    if (last->kind == S_EXPR) {
+                        a->body = last->a;
+                        a->block->list.len--;
+                    }
+                }
+            }
             for (int i = 0; i < e->list.len; i++) {
                 MatchArm *a = VEC_AT(&e->list, MatchArm, i);
                 Scope *sc = scope_new(cur_fn->scope);
@@ -1792,6 +1840,7 @@ static Type *check_expr(Expr *e, Type *want) {
                     if (g->kind != TY_BOOL) serr(a->guard->span, "match guard must be `Bool`, found `%s`", ty_str_of(g));
                 }
                 if (a->body) {
+                    if (a->block) check_block(a->block, sc);
                     Type *bt = check_expr(a->body, res);
                     if (!res) res = bt;
                     else if (!assignable(bt, res) && bt->kind != TY_VOID) {
@@ -2112,6 +2161,7 @@ static void check_stmt(Stmt *s) {
             break;
         }
         case S_EXPR: {
+            if (s->a && s->a->kind == E_MATCH) s->a->is_static = 1;
             Type *t = check_expr(s->a, NULL);
             if (s->a->kind == E_BINARY || s->a->kind == E_IDENT || s->a->kind == E_FIELD ||
                 s->a->kind == E_INT || s->a->kind == E_STR)
@@ -2237,6 +2287,8 @@ static void check_stmt(Stmt *s) {
 /* ------------------------------------------------------------------ */
 
 static int always_returns(Stmt *s);
+static int patterns_exhaustive(Vec *arms, Type *subject);
+static int block_returns(Stmt *b);
 
 static int block_returns(Stmt *b) {
     if (!b) return 0;
@@ -2255,7 +2307,24 @@ static int always_returns(Stmt *s) {
                    (s->else_s->kind == S_BLOCK ? block_returns(s->else_s) : always_returns(s->else_s));
         case S_EXPR:
             /* `panic(...)` diverges */
-            return s->a && s->a->kind == E_CALL && s->a->builtin == BI_PANIC;
+            if (s->a && s->a->kind == E_CALL && s->a->builtin == BI_PANIC) return 1;
+            /* an exhaustive `match` whose every arm diverges also diverges */
+            if (s->a && s->a->kind == E_MATCH && s->a->list.len) {
+                if (!patterns_exhaustive(&s->a->list, s->a->a ? s->a->a->type : NULL)) return 0;
+                for (int i = 0; i < s->a->list.len; i++) {
+                    MatchArm *a = VEC_AT(&s->a->list, MatchArm, i);
+                    int div = 0;
+                    if (a->body && a->body->kind == E_STMTEXPR && a->body->stmt &&
+                        a->body->stmt->kind == S_RETURN) div = 1;
+                    if (a->body && a->body->kind == E_CALL && a->body->builtin == BI_PANIC) div = 1;
+                    if (a->block && block_returns(a->block)) div = 1;
+                    if (a->block && a->body && a->body->kind == E_STMTEXPR &&
+                        a->body->stmt && a->body->stmt->kind == S_RETURN) div = 1;
+                    if (!div) return 0;
+                }
+                return 1;
+            }
+            return 0;
         case S_WHILE:
             return s->a && s->a->kind == E_BOOL && s->a->ival == 1 && !block_returns(s->then_s);
         default: return 0;

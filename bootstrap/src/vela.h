@@ -156,6 +156,7 @@ typedef struct TypeExpr {
     TypeExprKind kind;
     Span         span;
     const char  *name;      /* TE_NAME */
+    const char  *modname;   /* module qualifier, e.g. `lex` in `lex.Token` */
     Vec          args;      /* TypeExpr* : generic args / fn params */
     struct TypeExpr *sub;   /* TE_OPT/TE_RES/TE_LIST elem, TE_FN ret */
     struct TypeExpr *sub2;  /* TE_MAP value */
@@ -230,6 +231,7 @@ struct Pattern {
     Span     span;
     const char *name;       /* binding name / variant / type */
     const char *tyname;
+    const char *modname;    /* module qualifier for `mod.Type.Variant` */
     Vec      subs;          /* Pattern* */
     Vec      fields;        /* const char* names parallel to subs (P_STRUCT) */
     int64_t  ival;

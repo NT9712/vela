@@ -210,6 +210,11 @@ static TypeExpr *parse_type(P *p) {
             r = mktype(TE_NAME, sp);
             r->name = id->text;
             r->span = id->span;
+            if (at(p, T_DOT)) {
+                adv(p);
+                Tok *t2 = expect(p, T_IDENT, "as a type name after `.`");
+                if (t2) { r->modname = id->text; r->name = t2->text; r->span = join(sp, t2->span); }
+            }
             if (at(p, T_LBRACKET)) {
                 adv(p);
                 do {
@@ -279,6 +284,13 @@ static Pattern *parse_pattern_atom(P *p) {
                 Pattern *q = mkpat(P_ENUM, sp);
                 q->tyname = id->text;
                 q->name = v ? v->text : intern("?");
+                if (at(p, T_DOT)) {          /* mod.Type.Variant */
+                    adv(p);
+                    Tok *v2 = expect(p, T_IDENT, "as enum variant name");
+                    q->modname = id->text;
+                    q->tyname = v ? v->text : intern("?");
+                    q->name = v2 ? v2->text : intern("?");
+                }
                 if (accept(p, T_LPAREN)) {
                     if (!at(p, T_RPAREN)) {
                         do { skip_nl(p); if (at(p,T_RPAREN)) break;

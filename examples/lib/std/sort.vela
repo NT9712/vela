@@ -1,0 +1,51 @@
+// std/sort — sorting and searching.
+
+/// Sort a list of integers ascending, in place.
+pub fn ints(xs: [Int]) {
+    xs.sort_by(|a: Int, b: Int| a < b)
+}
+
+/// Sort a list of floats ascending, in place.
+pub fn floats(xs: [Float]) {
+    xs.sort_by(|a: Float, b: Float| a < b)
+}
+
+/// Sort a list of strings ascending, in place.
+pub fn strs(xs: [Str]) {
+    xs.sort_by(|a: Str, b: Str| a < b)
+}
+
+/// Sort with a custom ordering, in place.
+pub fn by[T](xs: [T], less: fn(T, T) -> Bool) {
+    xs.sort_by(less)
+}
+
+/// Index of `v` in a sorted list of integers, or -1.
+pub fn search_ints(xs: [Int], v: Int) -> Int {
+    let mut lo = 0
+    let mut hi = len(xs)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if xs[mid] == v {
+            return mid
+        }
+        if xs[mid] < v {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return -1
+}
+
+/// True when the list is sorted according to `less`.
+pub fn is_sorted[T](xs: [T], less: fn(T, T) -> Bool) -> Bool {
+    let mut i = 1
+    while i < len(xs) {
+        if less(xs[i], xs[i - 1]) {
+            return false
+        }
+        i += 1
+    }
+    return true
+}

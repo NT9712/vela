@@ -1,0 +1,275 @@
+// std/fs — files and directories.
+
+use core
+
+const SYS_OPEN: Int = 2
+const SYS_CLOSE: Int = 3
+const SYS_STAT: Int = 4
+const SYS_FSTAT: Int = 5
+const SYS_LSEEK: Int = 8
+const SYS_RENAME: Int = 82
+const SYS_MKDIR: Int = 83
+const SYS_RMDIR: Int = 84
+const SYS_UNLINK: Int = 87
+const SYS_GETDENTS64: Int = 217
+
+const O_RDONLY: Int = 0
+const O_WRONLY: Int = 1
+const O_CREAT: Int = 64
+const O_TRUNC: Int = 512
+const O_APPEND: Int = 1024
+
+fn cstr(s: Str) -> Int {
+    let p = core.str_alloc(len(s) + 1)
+    core.mcopy(p + 16, @addr(s) + 16, len(s))
+    @store8(p + 16 + len(s), 0)
+    return p + 16
+}
+
+/// An open file handle.
+pub struct File {
+    fd: Int,
+    path: Str,
+}
+
+/// Open `path` for reading.
+pub fn open(path: Str) -> !File {
+    let fd = @syscall(SYS_OPEN, cstr(path), O_RDONLY, 0)
+    if fd < 0 {
+        return err_code("cannot open '{path}': {errname(-fd)}", -fd)
+    }
+    return ok(File{ fd: fd, path: path })
+}
+
+/// Create or truncate `path` for writing.
+pub fn create(path: Str) -> !File {
+    let fd = @syscall(SYS_OPEN, cstr(path), O_WRONLY | O_CREAT | O_TRUNC, 420)
+    if fd < 0 {
+        return err_code("cannot create '{path}': {errname(-fd)}", -fd)
+    }
+    return ok(File{ fd: fd, path: path })
+}
+
+/// Open `path` for appending, creating it when absent.
+pub fn append(path: Str) -> !File {
+    let fd = @syscall(SYS_OPEN, cstr(path), O_WRONLY | O_CREAT | O_APPEND, 420)
+    if fd < 0 {
+        return err_code("cannot open '{path}': {errname(-fd)}", -fd)
+    }
+    return ok(File{ fd: fd, path: path })
+}
+
+/// Write a string to the file.
+pub fn File.write(self, s: Str) -> !Int {
+    let mut off = 0
+    let n = len(s)
+    while off < n {
+        let w = core.sys_write(self.fd, @addr(s) + 16 + off, n - off)
+        if w <= 0 {
+            return err("write to '{self.path}' failed")
+        }
+        off += w
+    }
+    return ok(n)
+}
+
+/// Read up to `n` bytes.
+pub fn File.read(self, n: Int) -> Str {
+    let p = core.str_alloc(n)
+    let got = @syscall(0, self.fd, p + 16, n)
+    if got <= 0 {
+        return ""
+    }
+    @store64(p + 8, got)
+    return @ref[Str](p)
+}
+
+/// Read the rest of the file.
+pub fn File.read_all(self) -> Str {
+    let mut out = ""
+    while true {
+        let chunk = self.read(65536)
+        if len(chunk) == 0 {
+            return out
+        }
+        out = out + chunk
+    }
+    return out
+}
+
+/// Close the handle.
+pub fn File.close(self) {
+    @syscall(SYS_CLOSE, self.fd)
+}
+
+/// Read a whole file as a string.
+pub fn read_file(path: Str) -> !Str {
+    let f = open(path)?
+    let s = f.read_all()
+    f.close()
+    return ok(s)
+}
+
+/// Read a whole file and split it into lines.
+pub fn read_lines(path: Str) -> ![Str] {
+    let s = read_file(path)?
+    return ok(s.lines())
+}
+
+/// Replace the contents of a file.
+pub fn write_file(path: Str, contents: Str) -> !Void {
+    let f = create(path)?
+    f.write(contents)?
+    f.close()
+    return ok(void)
+}
+
+/// Append to a file, creating it when absent.
+pub fn append_file(path: Str, contents: Str) -> !Void {
+    let f = append(path)?
+    f.write(contents)?
+    f.close()
+    return ok(void)
+}
+
+/// True when `path` exists.
+pub fn exists(path: Str) -> Bool {
+    let buf = core.alloc(160, 0)
+    return @syscall(SYS_STAT, cstr(path), buf) == 0
+}
+
+/// Size of `path` in bytes.
+pub fn size(path: Str) -> !Int {
+    let buf = core.alloc(160, 0)
+    if @syscall(SYS_STAT, cstr(path), buf) != 0 {
+        return err("cannot stat '{path}'")
+    }
+    return ok(@load64(buf + 48))
+}
+
+/// True when `path` is a directory.
+pub fn is_dir(path: Str) -> Bool {
+    let buf = core.alloc(160, 0)
+    if @syscall(SYS_STAT, cstr(path), buf) != 0 {
+        return false
+    }
+    return (@load32(buf + 24) & 61440) == 16384
+}
+
+/// True when `path` is a regular file.
+pub fn is_file(path: Str) -> Bool {
+    let buf = core.alloc(160, 0)
+    if @syscall(SYS_STAT, cstr(path), buf) != 0 {
+        return false
+    }
+    return (@load32(buf + 24) & 61440) == 32768
+}
+
+/// Delete a file.
+pub fn remove(path: Str) -> !Void {
+    if @syscall(SYS_UNLINK, cstr(path)) != 0 {
+        return err("cannot remove '{path}'")
+    }
+    return ok(void)
+}
+
+/// Create a directory.
+pub fn mkdir(path: Str) -> !Void {
+    let r = @syscall(SYS_MKDIR, cstr(path), 493)
+    if r != 0 and r != -17 {
+        return err("cannot create directory '{path}'")
+    }
+    return ok(void)
+}
+
+/// Create a directory and any missing parents.
+pub fn mkdir_all(path: Str) -> !Void {
+    let parts = path.split("/")
+    let mut cur = ""
+    if path.starts_with("/") {
+        cur = "/"
+    }
+    for p in parts {
+        if len(p) == 0 {
+            continue
+        }
+        if len(cur) > 0 and not cur.ends_with("/") {
+            cur = cur + "/"
+        }
+        cur = cur + p
+        mkdir(cur)?
+    }
+    return ok(void)
+}
+
+/// Remove an empty directory.
+pub fn rmdir(path: Str) -> !Void {
+    if @syscall(SYS_RMDIR, cstr(path)) != 0 {
+        return err("cannot remove directory '{path}'")
+    }
+    return ok(void)
+}
+
+/// Rename or move a path.
+pub fn rename(from: Str, to: Str) -> !Void {
+    if @syscall(SYS_RENAME, cstr(from), cstr(to)) != 0 {
+        return err("cannot rename '{from}' to '{to}'")
+    }
+    return ok(void)
+}
+
+/// Entries of a directory, excluding `.` and `..`.
+pub fn read_dir(path: Str) -> ![Str] {
+    let fd = @syscall(SYS_OPEN, cstr(path), 65536 | O_RDONLY, 0)
+    if fd < 0 {
+        return err("cannot open directory '{path}'")
+    }
+    let out: [Str] = []
+    let bufsz = 32768
+    let buf = core.alloc(bufsz + 16, 0) + 16
+    while true {
+        let n = @syscall(SYS_GETDENTS64, fd, buf, bufsz)
+        if n <= 0 {
+            @syscall(SYS_CLOSE, fd)
+            return ok(out)
+        }
+        let mut off = 0
+        while off < n {
+            let reclen = @load16(buf + off + 16)
+            let namep = buf + off + 19
+            let mut l = 0
+            while @load8(namep + l) != 0 {
+                l += 1
+            }
+            let name = core.str_from(namep, l)
+            if name != "." and name != ".." {
+                out.push(name)
+            }
+            off += reclen
+        }
+    }
+    @syscall(SYS_CLOSE, fd)
+    return ok(out)
+}
+
+fn errname(e: Int) -> Str {
+    if e == 2 {
+        return "no such file or directory"
+    }
+    if e == 13 {
+        return "permission denied"
+    }
+    if e == 17 {
+        return "already exists"
+    }
+    if e == 20 {
+        return "not a directory"
+    }
+    if e == 21 {
+        return "is a directory"
+    }
+    if e == 28 {
+        return "no space left on device"
+    }
+    return "errno {e}"
+}

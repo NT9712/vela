@@ -1,0 +1,86 @@
+// std/io — console and stream input/output.
+
+use core
+
+pub const STDIN: Int = 0
+pub const STDOUT: Int = 1
+pub const STDERR: Int = 2
+
+/// Write `s` to standard output.
+pub fn print(s: Str) {
+    core.print_str(s)
+}
+
+/// Write `s` and a newline to standard output.
+pub fn println(s: Str) {
+    core.print_str(s)
+    core.print_str("\n")
+}
+
+/// Write `s` to standard error.
+pub fn eprint(s: Str) {
+    core.eprint_str(s)
+}
+
+/// Write `s` and a newline to standard error.
+pub fn eprintln(s: Str) {
+    core.eprint_str(s)
+    core.eprint_str("\n")
+}
+
+/// Write raw bytes to a file descriptor. Returns the number written.
+pub fn write(fd: Int, s: Str) -> Int {
+    return core.sys_write(fd, @addr(s) + 16, len(s))
+}
+
+/// Read up to `n` bytes from `fd`. Returns an empty string at end of file.
+pub fn read(fd: Int, n: Int) -> Str {
+    let p = core.str_alloc(n)
+    let got = @syscall(core.SYS_READ, fd, p + 16, n)
+    if got <= 0 {
+        return ""
+    }
+    @store64(p + 8, got)
+    return @ref[Str](p)
+}
+
+/// Read one line from standard input, without the trailing newline.
+/// Returns nil at end of file.
+pub fn read_line() -> ?Str {
+    let mut out = ""
+    let mut any = false
+    let buf = core.str_alloc(1)
+    while true {
+        let got = @syscall(core.SYS_READ, STDIN, buf + 16, 1)
+        if got <= 0 {
+            if not any {
+                return nil
+            }
+            return out
+        }
+        any = true
+        let c = @load8(buf + 16)
+        if c == 10 {
+            return out
+        }
+        out = out + @ref[Str](buf)
+    }
+    return out
+}
+
+/// Read all of standard input.
+pub fn read_all() -> Str {
+    let mut out = ""
+    while true {
+        let chunk = read(STDIN, 65536)
+        if len(chunk) == 0 {
+            return out
+        }
+        out = out + chunk
+    }
+    return out
+}
+
+/// Flush is a no-op: Vela's output is unbuffered and every write is a syscall.
+pub fn flush() {
+}

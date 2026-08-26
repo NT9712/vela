@@ -1,0 +1,686 @@
+// tools/cli.vela — the `vela` command-line tool.
+//
+// This program is itself written in Vela and compiled by velac, so the whole
+// toolchain other than the bootstrap compiler runs on the language it serves.
+
+use std/os
+use std/fs
+use std/io
+use std/path
+use std/process
+use std/fmt as F
+use ./fmt as vfmt
+use ./doc as vdoc
+
+const VERSION: Str = "1.0.0"
+
+struct Manifest {
+    name: Str,
+    version: Str,
+    main: Str,
+    deps: {Str: Str},
+}
+
+fn main() -> Int {
+    let argv = os.args()
+    if len(argv) < 2 {
+        usage()
+        return 1
+    }
+    let cmd = argv[1]
+    let rest = argv[2..len(argv)]
+
+    if cmd == "help" or cmd == "--help" or cmd == "-h" {
+        if len(rest) > 0 {
+            return help_for(rest[0])
+        }
+        usage()
+        return 0
+    }
+    if cmd == "version" or cmd == "--version" or cmd == "-V" {
+        io.println("vela {VERSION}")
+        return 0
+    }
+
+    let r = dispatch(cmd, rest)
+    match r {
+        ok(code) => return code,
+        err(e) => {
+            io.eprintln("\x1b[1;31merror\x1b[0m: {e.msg}")
+            return 1
+        },
+    }
+}
+
+fn dispatch(cmd: Str, rest: [Str]) -> !Int {
+    if cmd == "new" {
+        return cmd_new(rest)
+    }
+    if cmd == "init" {
+        return cmd_init(rest)
+    }
+    if cmd == "build" {
+        return cmd_build(rest)
+    }
+    if cmd == "run" {
+        return cmd_run(rest)
+    }
+    if cmd == "check" {
+        return cmd_check(rest)
+    }
+    if cmd == "test" {
+        return cmd_test(rest)
+    }
+    if cmd == "fmt" {
+        return cmd_fmt(rest)
+    }
+    if cmd == "doc" {
+        return cmd_doc(rest)
+    }
+    if cmd == "clean" {
+        return cmd_clean(rest)
+    }
+    if cmd == "add" {
+        return cmd_add(rest)
+    }
+    if cmd == "remove" {
+        return cmd_remove(rest)
+    }
+    if cmd == "repl" {
+        return cmd_repl(rest)
+    }
+    return err("unknown command `{cmd}`\n       run `vela help` for the list of commands")
+}
+
+// ------------------------------------------------------------------- usage
+
+fn usage() {
+    io.println("vela {VERSION} - the Vela toolchain")
+    io.println("")
+    io.println("usage: vela <command> [arguments]")
+    io.println("")
+    io.println("commands:")
+    io.println(F.pad_right("  new <name>", 22) + "create a new project in ./<name>")
+    io.println(F.pad_right("  init", 22) + "create a project in the current directory")
+    io.println(F.pad_right("  build", 22) + "compile the project to build/<name>")
+    io.println(F.pad_right("  run [args...]", 22) + "build, then run with the given arguments")
+    io.println(F.pad_right("  check", 22) + "type-check without producing a binary")
+    io.println(F.pad_right("  test", 22) + "compile and run every `test` block")
+    io.println(F.pad_right("  fmt [--check]", 22) + "format every .vela file in the project")
+    io.println(F.pad_right("  doc [--out D]", 22) + "generate Markdown API documentation")
+    io.println(F.pad_right("  add <n> --path P", 22) + "add a local dependency to vela.toml")
+    io.println(F.pad_right("  remove <name>", 22) + "remove a dependency")
+    io.println(F.pad_right("  clean", 22) + "delete the build directory")
+    io.println(F.pad_right("  repl", 22) + "evaluate expressions interactively")
+    io.println(F.pad_right("  version", 22) + "print the toolchain version")
+    io.println("")
+    io.println("run `vela help <command>` for details.")
+}
+
+fn help_for(c: Str) -> Int {
+    if c == "new" {
+        io.println("vela new <name>\n\nCreates ./<name> containing vela.toml, src/main.vela and a .gitignore.")
+    } else if c == "build" {
+        io.println("vela build [--out PATH] [--emit-ir]\n\nCompiles the module named by `main` in vela.toml.\nThe binary is written to build/<name> unless --out is given.")
+    } else if c == "run" {
+        io.println("vela run [args...]\n\nBuilds the project and runs it, forwarding args to the program.")
+    } else if c == "test" {
+        io.println("vela test\n\nCompiles every `test` block in the project into a test binary and runs it.")
+    } else if c == "fmt" {
+        io.println("vela fmt [--check] [paths...]\n\nRewrites files in canonical style. --check exits 1 if anything would change.")
+    } else if c == "doc" {
+        io.println("vela doc [--out DIR]\n\nExtracts `///` documentation into Markdown, one file per module.")
+    } else if c == "add" {
+        io.println("vela add <name> --path <dir>\n\nRecords a local dependency in vela.toml and links it under deps/.")
+    } else {
+        io.println("no extra help for `{c}`")
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------- manifest
+
+fn find_root() -> !Str {
+    let mut d = os.cwd()
+    let mut i = 0
+    while i < 40 {
+        if fs.exists(path.join([d, "vela.toml"])) {
+            return ok(d)
+        }
+        if d == "/" or len(d) == 0 {
+            break
+        }
+        d = path.dir(d)
+        i += 1
+    }
+    return err("no vela.toml found in this directory or any parent\n" +
+               "       run `vela new <name>` or `vela init` to create a project")
+}
+
+fn parse_manifest(root: Str) -> !Manifest {
+    let text = fs.read_file(path.join([root, "vela.toml"]))?
+    let m = Manifest{ name: "app", version: "0.1.0", main: "src/main.vela", deps: {:} }
+    let mut section = ""
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim()
+        if len(line) == 0 {
+            continue
+        }
+        if line.starts_with("[") and line.ends_with("]") {
+            section = line[1..len(line) - 1]
+            continue
+        }
+        let eq = line.index_of("=")
+        if eq < 0 {
+            continue
+        }
+        let key = line[0..eq].trim()
+        let val = line[eq + 1..len(line)].trim()
+        if section == "package" {
+            if key == "name" {
+                m.name = unquote(val)
+            } else if key == "version" {
+                m.version = unquote(val)
+            } else if key == "main" {
+                m.main = unquote(val)
+            }
+        } else if section == "deps" {
+            m.deps[key] = dep_path(val)
+        }
+    }
+    return ok(m)
+}
+
+fn strip_comment(s: Str) -> Str {
+    let mut in_str = false
+    let mut i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == '"' {
+            in_str = not in_str
+        }
+        if c == '#' and not in_str {
+            return s[0..i]
+        }
+        i += 1
+    }
+    return s
+}
+
+fn unquote(s: Str) -> Str {
+    if len(s) >= 2 and s.starts_with("\"") and s.ends_with("\"") {
+        return s[1..len(s) - 1]
+    }
+    return s
+}
+
+/// `{ path = "../json" }` or `"../json"`
+fn dep_path(val: Str) -> Str {
+    let i = val.index_of("path")
+    if i < 0 {
+        return unquote(val)
+    }
+    let rest = val[i..len(val)]
+    let q = rest.index_of("\"")
+    if q < 0 {
+        return ""
+    }
+    let after = rest[q + 1..len(rest)]
+    let q2 = after.index_of("\"")
+    if q2 < 0 {
+        return ""
+    }
+    return after[0..q2]
+}
+
+fn velac_path() -> Str {
+    if let v = os.getenv("VELAC") {
+        return v
+    }
+    let cand = path.join([path.dir(os.exe_path()), "velac"])
+    if fs.exists(cand) {
+        return cand
+    }
+    if let w = process.which("velac") {
+        return w
+    }
+    return cand
+}
+
+fn compile(root: Str, m: Manifest, out: Str, extra: [Str]) -> !Int {
+    let vc = velac_path()
+    if not fs.exists(vc) {
+        return err("cannot find the `velac` compiler (looked for '{vc}')\n" +
+                   "       set VELAC=/path/to/velac, or put velac next to vela")
+    }
+    let args: [Str] = [vc, "-o", out]
+    for a in extra {
+        args.push(a)
+    }
+    for name, p in m.deps {
+        let mut abs = p
+        if not path.is_absolute(p) {
+            abs = path.normalize(path.join([root, p]))
+        }
+        args.push("--dep")
+        args.push(path.dir(abs))
+    }
+    args.push("--dep")
+    args.push(path.join([root, "deps"]))
+    args.push(path.join([root, m.main]))
+    return process.spawn(args)
+}
+
+// -------------------------------------------------------------- commands
+
+fn cmd_new(rest: [Str]) -> !Int {
+    if len(rest) == 0 {
+        return err("`vela new` needs a project name\n       usage: vela new <name>")
+    }
+    let name = rest[0]
+    if fs.exists(name) {
+        return err("`{name}` already exists")
+    }
+    fs.mkdir_all(path.join([name, "src"]))?
+    write_template(name, name)?
+    io.println("created {name}/")
+    io.println("")
+    io.println("    cd {name}")
+    io.println("    vela run")
+    return ok(0)
+}
+
+fn cmd_init(_rest: [Str]) -> !Int {
+    let dir = os.cwd()
+    let name = path.base(dir)
+    if fs.exists("vela.toml") {
+        return err("vela.toml already exists here")
+    }
+    fs.mkdir_all("src")?
+    write_template(".", name)?
+    io.println("created vela.toml and src/main.vela for `{name}`")
+    return ok(0)
+}
+
+fn write_template(dir: Str, name: Str) -> !Void {
+    fs.write_file(path.join([dir, "vela.toml"]),
+        "[package]\nname    = \"{name}\"\nversion = \"0.1.0\"\nmain    = \"src/main.vela\"\n\n[deps]\n")?
+    fs.write_file(path.join([dir, "src", "main.vela"]),
+        "use std/io\n\nfn main() {{\n    io.println(\"hello from {name}\")\n}}\n\ntest \"greeting is not empty\" {{\n    assert(len(\"hello\") > 0)\n}}\n")?
+    fs.write_file(path.join([dir, ".gitignore"]), "build/\n")?
+    return ok(void)
+}
+
+fn cmd_build(rest: [Str]) -> !Int {
+    let root = find_root()?
+    let m = parse_manifest(root)?
+    fs.mkdir_all(path.join([root, "build"]))?
+    let mut out = path.join([root, "build", m.name])
+    let extra: [Str] = []
+    let mut i = 0
+    while i < len(rest) {
+        if rest[i] == "--out" and i + 1 < len(rest) {
+            out = rest[i + 1]
+            i += 2
+            continue
+        }
+        extra.push(rest[i])
+        i += 1
+    }
+    let code = compile(root, m, out, extra)?
+    if code == 0 {
+        io.println("built {out}")
+    }
+    return ok(code)
+}
+
+fn cmd_run(rest: [Str]) -> !Int {
+    let root = find_root()?
+    let m = parse_manifest(root)?
+    fs.mkdir_all(path.join([root, "build"]))?
+    let out = path.join([root, "build", m.name])
+    let code = compile(root, m, out, ["-q"])?
+    if code != 0 {
+        return ok(code)
+    }
+    let args: [Str] = [out]
+    for a in rest {
+        args.push(a)
+    }
+    return process.spawn(args)
+}
+
+fn cmd_check(rest: [Str]) -> !Int {
+    let root = find_root()?
+    let m = parse_manifest(root)?
+    let args: [Str] = [velac_path(), "--check"]
+    for name, p in m.deps {
+        let mut abs = p
+        if not path.is_absolute(p) {
+            abs = path.normalize(path.join([root, p]))
+        }
+        args.push("--dep")
+        args.push(path.dir(abs))
+    }
+    args.push("--dep")
+    args.push(path.join([root, "deps"]))
+    for a in rest {
+        args.push(a)
+    }
+    args.push(path.join([root, m.main]))
+    let code = process.spawn(args)?
+    if code == 0 {
+        io.println("ok")
+    }
+    return ok(code)
+}
+
+fn cmd_test(_rest: [Str]) -> !Int {
+    let root = find_root()?
+    let m = parse_manifest(root)?
+    fs.mkdir_all(path.join([root, "build"]))?
+    let out = path.join([root, "build", m.name + "-test"])
+    let code = compile(root, m, out, ["--test", "-q"])?
+    if code != 0 {
+        return ok(code)
+    }
+    return process.spawn([out])
+}
+
+fn cmd_fmt(rest: [Str]) -> !Int {
+    let mut check = false
+    let targets: [Str] = []
+    for a in rest {
+        if a == "--check" {
+            check = true
+        } else {
+            targets.push(a)
+        }
+    }
+    if len(targets) == 0 {
+        let root = find_root() ?? os.cwd()
+        collect_vela(root, targets)
+    }
+    let mut changed = 0
+    for f in targets {
+        let src = fs.read_file(f)?
+        let outp = vfmt.format(src)
+        match outp {
+            err(e) => {
+                io.eprintln("{f}: {e.msg}")
+                return ok(1)
+            },
+            ok(text) => {
+                if text != src {
+                    changed += 1
+                    if check {
+                        io.println("would reformat {f}")
+                    } else {
+                        fs.write_file(f, text)?
+                        io.println("formatted {f}")
+                    }
+                }
+            },
+        }
+    }
+    if changed == 0 {
+        io.println("{len(targets)} file(s) already formatted")
+    }
+    if check and changed > 0 {
+        return ok(1)
+    }
+    return ok(0)
+}
+
+fn collect_vela(dir: Str, into: [Str]) {
+    let empty: [Str] = []
+    let names = fs.read_dir(dir) ?? empty
+    for n in names {
+        if n == "build" or n == "deps" or n.starts_with(".") {
+            continue
+        }
+        let p = path.join([dir, n])
+        if fs.is_dir(p) {
+            collect_vela(p, into)
+        } else if n.ends_with(".vela") {
+            into.push(p)
+        }
+    }
+}
+
+fn cmd_doc(rest: [Str]) -> !Int {
+    let root = find_root()?
+    let mut outdir = path.join([root, "docs", "api"])
+    let mut i = 0
+    while i < len(rest) {
+        if rest[i] == "--out" and i + 1 < len(rest) {
+            outdir = rest[i + 1]
+            i += 2
+            continue
+        }
+        i += 1
+    }
+    fs.mkdir_all(outdir)?
+    let files: [Str] = []
+    collect_vela(path.join([root, "src"]), files)
+    if len(files) == 0 {
+        collect_vela(root, files)
+    }
+    let index: [Str] = ["# API reference", ""]
+    for f in files {
+        let src = fs.read_file(f)?
+        let name = path.stem(f)
+        let md = vdoc.render(name, src)?
+        fs.write_file(path.join([outdir, name + ".md"]), md)?
+        index.push("- [{name}]({name}.md)")
+    }
+    fs.write_file(path.join([outdir, "README.md"]), index.join("\n") + "\n")?
+    io.println("wrote {len(files)} page(s) to {outdir}")
+    return ok(0)
+}
+
+fn cmd_clean(_rest: [Str]) -> !Int {
+    let root = find_root()?
+    let b = path.join([root, "build"])
+    if not fs.exists(b) {
+        io.println("nothing to clean")
+        return ok(0)
+    }
+    let names = fs.read_dir(b)?
+    for n in names {
+        fs.remove(path.join([b, n]))?
+    }
+    fs.rmdir(b)?
+    io.println("removed {b}")
+    return ok(0)
+}
+
+fn cmd_add(rest: [Str]) -> !Int {
+    if len(rest) < 1 {
+        return err("usage: vela add <name> --path <dir>")
+    }
+    let name = rest[0]
+    let mut dep = ""
+    let mut i = 1
+    while i < len(rest) {
+        if rest[i] == "--path" and i + 1 < len(rest) {
+            dep = rest[i + 1]
+            i += 2
+            continue
+        }
+        i += 1
+    }
+    if len(dep) == 0 {
+        return err("`vela add` currently supports local dependencies only\n       usage: vela add {name} --path ../{name}")
+    }
+    let root = find_root()?
+    let manifest = path.join([root, "vela.toml"])
+    let text = fs.read_file(manifest)?
+    if text.contains("\n{name} =") or text.starts_with("{name} =") {
+        return err("`{name}` is already a dependency")
+    }
+    let mut out = text
+    if not out.contains("[deps]") {
+        out = out + "\n[deps]\n"
+    }
+    out = out.replace("[deps]\n", "[deps]\n{name} = {{ path = \"{dep}\" }}\n")
+    fs.write_file(manifest, out)?
+    write_lock(root)?
+    io.println("added {name} = {dep}")
+    return ok(0)
+}
+
+fn cmd_remove(rest: [Str]) -> !Int {
+    if len(rest) < 1 {
+        return err("usage: vela remove <name>")
+    }
+    let name = rest[0]
+    let root = find_root()?
+    let manifest = path.join([root, "vela.toml"])
+    let text = fs.read_file(manifest)?
+    let kept: [Str] = []
+    let mut found = false
+    for line in text.lines() {
+        if line.trim().starts_with(name + " ") or line.trim().starts_with(name + "=") {
+            found = true
+            continue
+        }
+        kept.push(line)
+    }
+    if not found {
+        return err("`{name}` is not a dependency")
+    }
+    fs.write_file(manifest, kept.join("\n") + "\n")?
+    write_lock(root)?
+    io.println("removed {name}")
+    return ok(0)
+}
+
+/// Record the resolved dependency set so builds are reproducible.
+fn write_lock(root: Str) -> !Void {
+    let m = parse_manifest(root)?
+    let lines: [Str] = ["# generated by vela; do not edit", "version = 1", ""]
+    let names = m.deps.keys()
+    names.sort_by(|a: Str, b: Str| a < b)
+    for n in names {
+        let p = m.deps[n] ?? ""
+        let mut abs = p
+        if not path.is_absolute(p) {
+            abs = path.normalize(path.join([root, p]))
+        }
+        let src = path.join([abs, "vela.toml"])
+        let mut ver = "0.0.0"
+        let mut hash = 0
+        if fs.exists(src) {
+            let dm = parse_manifest(abs)?
+            ver = dm.version
+            hash = fingerprint(abs)
+        }
+        lines.push("[[dep]]")
+        lines.push("name    = \"{n}\"")
+        lines.push("version = \"{ver}\"")
+        lines.push("path    = \"{p}\"")
+        lines.push("hash    = \"{hash.hex()}\"")
+        lines.push("")
+    }
+    fs.write_file(path.join([root, "vela.lock"]), lines.join("\n"))?
+    return ok(void)
+}
+
+/// A content hash of every .vela file in a package, so the lockfile changes
+/// when a local dependency changes.
+fn fingerprint(dir: Str) -> Int {
+    let files: [Str] = []
+    collect_vela(dir, files)
+    files.sort_by(|a: Str, b: Str| a < b)
+    let mut h = 1469598103934665603
+    for f in files {
+        h = h ^ f.hash()
+        let text = fs.read_file(f) ?? ""
+        h = (h * 1099511628211) ^ text.hash()
+    }
+    return h & 0x7FFFFFFFFFFFFFFF
+}
+
+// ------------------------------------------------------------------- repl
+
+fn cmd_repl(_rest: [Str]) -> !Int {
+    io.println("vela {VERSION} repl - type an expression, or :help")
+    let tmpdir = "/tmp/vela-repl-{os.pid()}"
+    fs.mkdir_all(tmpdir)?
+    let src = path.join([tmpdir, "repl.vela"])
+    let bin = path.join([tmpdir, "repl"])
+    let prelude: [Str] = []
+    while true {
+        io.print("> ")
+        let line = io.read_line() ?? break
+        let t = line.trim()
+        if len(t) == 0 {
+            continue
+        }
+        if t == ":q" or t == ":quit" or t == ":exit" {
+            break
+        }
+        if t == ":help" {
+            io.println(":q        quit")
+            io.println(":clear    forget previous definitions")
+            io.println(":list     show the current session")
+            io.println("anything else is evaluated; `let`, `fn`, `struct` etc. persist")
+            continue
+        }
+        if t == ":clear" {
+            prelude.clear()
+            io.println("cleared")
+            continue
+        }
+        if t == ":list" {
+            for l in prelude {
+                io.println(l)
+            }
+            continue
+        }
+        let is_decl = t.starts_with("fn ") or t.starts_with("struct ") or
+                      t.starts_with("enum ") or t.starts_with("use ") or
+                      t.starts_with("const ") or t.starts_with("type ")
+        let body: [Str] = []
+        let tops: [Str] = []
+        for p in prelude {
+            if p.starts_with("fn ") or p.starts_with("struct ") or
+               p.starts_with("enum ") or p.starts_with("use ") or
+               p.starts_with("const ") or p.starts_with("type ") {
+                tops.push(p)
+            } else {
+                body.push(p)
+            }
+        }
+        let mut text = tops.join("\n") + "\nfn main() {{\n"
+        for b in body {
+            text = text + "    " + b + "\n"
+        }
+        if is_decl {
+            text = tops.join("\n") + "\n" + t + "\nfn main() {{\n"
+            for b in body {
+                text = text + "    " + b + "\n"
+            }
+            text = text + "}}\n"
+        } else if t.starts_with("let ") or t.contains("=") and not t.contains("==") {
+            text = text + "    " + t + "\n}}\n"
+        } else {
+            text = text + "    println({{\"{{}}\"}})\n}}\n"
+            text = tops.join("\n") + "\nfn main() {{\n"
+            for b in body {
+                text = text + "    " + b + "\n"
+            }
+            text = text + "    println(" + t + ")\n}}\n"
+        }
+        fs.write_file(src, text)?
+        let code = process.spawn([velac_path(), "-q", "--no-color", "-o", bin, src])?
+        if code != 0 {
+            continue
+        }
+        process.spawn([bin])?
+        prelude.push(t)
+    }
+    io.println("")
+    return ok(0)
+}

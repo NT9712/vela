@@ -1,0 +1,43 @@
+// std/testing — helpers for `test` blocks.
+//
+// `assert`, `assert_eq` and `assert_ne` are in the prelude; this module adds
+// the less common checks.
+
+use core
+
+/// Fail unless `a` and `b` differ by no more than `eps`.
+pub fn assert_near(a: Float, b: Float, eps: Float) {
+    let d = (a - b).abs()
+    assert(d <= eps, "expected {a} ~= {b} (within {eps}), differ by {d}")
+}
+
+/// Fail unless `s` contains `sub`.
+pub fn assert_contains(s: Str, sub: Str) {
+    assert(s.contains(sub), "expected '{s}' to contain '{sub}'")
+}
+
+/// Fail unless the list contains `v`.
+pub fn assert_has[T](xs: [T], v: T) {
+    assert(xs.contains(v), "expected {xs} to contain {v}")
+}
+
+/// Fail unless the result is an error.
+pub fn assert_err[T](r: !T) {
+    match r {
+        ok(_) => panic("expected an error, got ok"),
+        err(_) => {},
+    }
+}
+
+/// Fail unless the result is ok, and return the value.
+pub fn assert_ok[T](r: !T) -> T {
+    return match r {
+        ok(v) => v,
+        err(e) => panic_ret[T]("expected ok, got error: {e.msg}"),
+    }
+}
+
+fn panic_ret[T](msg: Str) -> T {
+    panic(msg)
+    return @ref[T](0)
+}

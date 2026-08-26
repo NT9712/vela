@@ -954,6 +954,7 @@ static int gen_match(Gen *g, Expr *e, int as_expr) {
             g->blk = bok;
         }
         if (a->body) {
+            if (a->block) gen_block(g, a->block);
             int r = gen_expr(g, a->body);
             if (as_expr) {
                 r = gen_coerce(g, r, a->body->type, e->type);

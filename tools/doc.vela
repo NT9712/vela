@@ -1,0 +1,218 @@
+// tools/doc.vela — extract `///` documentation into Markdown.
+//
+// Uses the same self-hosted lexer as the formatter, so what the documentation
+// generator sees is exactly what the compiler sees.
+
+use ./lex
+
+/// Render a module's public API as a Markdown page.
+pub fn render(module: Str, src: Str) -> !Str {
+    let toks = lex.tokenize(src)?
+    let out: [Str] = []
+    out.push("# {module}")
+    out.push("")
+
+    // module-level header comment: the run of `//` comments at the top
+    let mut i = 0
+    let header: [Str] = []
+    while i < len(toks) {
+        let t = toks[i]
+        if t.is_newline() {
+            i += 1
+            continue
+        }
+        if is_line_comment(t) {
+            header.push(comment_text(t))
+            i += 1
+            continue
+        }
+        break
+    }
+    if len(header) > 0 {
+        for h in header {
+            out.push(h.trim())
+        }
+        out.push("")
+    }
+
+    let doc: [Str] = []
+    while i < len(toks) {
+        let t = toks[i]
+        if t.is_eof() {
+            break
+        }
+        if is_doc(t) {
+            doc.push(doc_text(t))
+            i += 1
+            continue
+        }
+        if t.is_newline() or t.is_comment() {
+            if t.is_newline() and t.blanks() > 0 {
+                doc.clear()
+            }
+            i += 1
+            continue
+        }
+        if t.is_kw("pub") {
+            let sig = signature(toks, i + 1)
+            if len(sig) > 0 {
+                out.push("### `{sig}`")
+                out.push("")
+                if len(doc) > 0 {
+                    for d in doc {
+                        out.push(d)
+                    }
+                    out.push("")
+                }
+            }
+            doc.clear()
+            i = skip_item(toks, i + 1)
+            continue
+        }
+        doc.clear()
+        i = skip_item(toks, i)
+    }
+    return ok(out.join("\n") + "\n")
+}
+
+fn is_doc(t: lex.Token) -> Bool {
+    return match t.kind {
+        lex.Tok.Doc(_) => true,
+        _ => false,
+    }
+}
+
+fn doc_text(t: lex.Token) -> Str {
+    return match t.kind {
+        lex.Tok.Doc(s) => s,
+        _ => "",
+    }
+}
+
+fn is_line_comment(t: lex.Token) -> Bool {
+    return match t.kind {
+        lex.Tok.Comment(_) => true,
+        _ => false,
+    }
+}
+
+fn comment_text(t: lex.Token) -> Str {
+    return match t.kind {
+        lex.Tok.Comment(s) => s,
+        _ => "",
+    }
+}
+
+/// Render the one-line signature of the declaration starting at `i`.
+fn signature(toks: [lex.Token], i: Int) -> Str {
+    let t = toks[i]
+    if t.is_kw("fn") {
+        return join_until(toks, i, "{{")
+    }
+    if t.is_kw("struct") or t.is_kw("enum") {
+        return join_until(toks, i, "{{")
+    }
+    if t.is_kw("const") or t.is_kw("type") {
+        return join_until_newline(toks, i)
+    }
+    return ""
+}
+
+fn join_until(toks: [lex.Token], from: Int, stop: Str) -> Str {
+    let parts: [Str] = []
+    let mut i = from
+    while i < len(toks) {
+        let t = toks[i]
+        if t.is_eof() or t.is_punct(stop) {
+            break
+        }
+        if t.is_newline() {
+            i += 1
+            continue
+        }
+        parts.push(t.text())
+        i += 1
+    }
+    return tidy(parts)
+}
+
+fn join_until_newline(toks: [lex.Token], from: Int) -> Str {
+    let parts: [Str] = []
+    let mut i = from
+    while i < len(toks) {
+        let t = toks[i]
+        if t.is_eof() or t.is_newline() {
+            break
+        }
+        parts.push(t.text())
+        i += 1
+    }
+    return tidy(parts)
+}
+
+/// Join token texts with the minimum sensible spacing.
+fn tidy(parts: [Str]) -> Str {
+    let mut s = ""
+    let tight_before = [")", "]", ",", ":", ".", "(", "["]
+    let tight_after = ["(", "[", ".", "@", "?", "!"]
+    for i, p in parts {
+        if i == 0 {
+            s = p
+            continue
+        }
+        let prev = parts[i - 1]
+        let mut sep = " "
+        if tight_before.contains(p) and p != "(" and p != "[" {
+            sep = ""
+        }
+        if tight_after.contains(prev) {
+            sep = ""
+        }
+        if p == "(" or p == "[" {
+            if is_word(prev) or prev == ")" or prev == "]" {
+                sep = ""
+            }
+        }
+        if prev == "," {
+            sep = " "
+        }
+        if prev == ":" {
+            sep = " "
+        }
+        s = s + sep + p
+    }
+    return s
+}
+
+fn is_word(s: Str) -> Bool {
+    if len(s) == 0 {
+        return false
+    }
+    return s[0].is_alnum() or s[0] == '_'
+}
+
+/// Skip past the declaration starting at `i`, returning the index after it.
+fn skip_item(toks: [lex.Token], i: Int) -> Int {
+    let mut j = i
+    let mut depth = 0
+    let mut saw_brace = false
+    while j < len(toks) {
+        let t = toks[j]
+        if t.is_eof() {
+            return j
+        }
+        if t.is_punct("{{") {
+            depth += 1
+            saw_brace = true
+        } else if t.is_punct("}}") {
+            depth -= 1
+            if depth <= 0 and saw_brace {
+                return j + 1
+            }
+        } else if t.is_newline() and depth == 0 and j > i {
+            return j + 1
+        }
+        j += 1
+    }
+    return j
+}

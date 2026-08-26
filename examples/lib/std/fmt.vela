@@ -1,0 +1,142 @@
+// std/fmt — value formatting helpers.
+//
+// Vela's string interpolation covers most needs; this module adds alignment,
+// padding and number formatting for tables and reports.
+
+/// Left-align `s` in a field of `w` characters.
+pub fn pad_right(s: Str, w: Int) -> Str {
+    if len(s) >= w {
+        return s
+    }
+    return s + " ".repeat(w - len(s))
+}
+
+/// Right-align `s` in a field of `w` characters.
+pub fn pad_left(s: Str, w: Int) -> Str {
+    if len(s) >= w {
+        return s
+    }
+    return " ".repeat(w - len(s)) + s
+}
+
+/// Centre `s` in a field of `w` characters.
+pub fn center(s: Str, w: Int) -> Str {
+    if len(s) >= w {
+        return s
+    }
+    let total = w - len(s)
+    let left = total / 2
+    return " ".repeat(left) + s + " ".repeat(total - left)
+}
+
+/// Zero-pad an integer to `w` digits.
+pub fn zero_pad(n: Int, w: Int) -> Str {
+    let neg = n < 0
+    let d = str(n.abs())
+    let mut body = d
+    if len(d) < w {
+        body = "0".repeat(w - len(d)) + d
+    }
+    if neg {
+        return "-" + body
+    }
+    return body
+}
+
+/// Fixed-point rendering with `places` digits after the point.
+pub fn fixed(v: Float, places: Int) -> Str {
+    let neg = v < 0.0
+    let mut x = v.abs()
+    let mut scale = 1
+    let mut i = 0
+    while i < places {
+        scale = scale * 10
+        i += 1
+    }
+    let n = int((x * float(scale)).round())
+    let whole = n / scale
+    let frac = n % scale
+    let mut s = str(whole)
+    if places > 0 {
+        s = s + "." + zero_pad(frac, places)
+    }
+    if neg {
+        return "-" + s
+    }
+    return s
+}
+
+/// Thousands separators, e.g. `1,234,567`.
+pub fn commas(n: Int) -> Str {
+    let neg = n < 0
+    let d = str(n.abs())
+    let mut out = ""
+    let mut c = 0
+    let mut i = len(d) - 1
+    while i >= 0 {
+        out = d[i..i + 1] + out
+        c += 1
+        if c % 3 == 0 and i > 0 {
+            out = "," + out
+        }
+        i -= 1
+    }
+    if neg {
+        return "-" + out
+    }
+    return out
+}
+
+/// A byte count in human units.
+pub fn bytes(n: Int) -> Str {
+    if n < 1024 {
+        return "{n} B"
+    }
+    let units = ["KiB", "MiB", "GiB", "TiB"]
+    let mut v = float(n) / 1024.0
+    let mut u = 0
+    while v >= 1024.0 and u < 3 {
+        v = v / 1024.0
+        u += 1
+    }
+    return fixed(v, 1) + " " + units[u]
+}
+
+/// A simple text table: `rows` of equal length, first row is the header.
+pub fn table(rows: [[Str]]) -> Str {
+    if len(rows) == 0 {
+        return ""
+    }
+    let ncol = len(rows[0])
+    let widths: [Int] = []
+    for i in 0..ncol {
+        let mut w = 0
+        for r in rows {
+            if i < len(r) and len(r[i]) > w {
+                w = len(r[i])
+            }
+        }
+        widths.push(w)
+    }
+    let lines: [Str] = []
+    for ri, r in rows {
+        let cells: [Str] = []
+        for i in 0..ncol {
+            let cell = ""
+            if i < len(r) {
+                cells.push(pad_right(r[i], widths[i]))
+            } else {
+                cells.push(pad_right(cell, widths[i]))
+            }
+        }
+        lines.push(cells.join("  ").trim())
+        if ri == 0 {
+            let seps: [Str] = []
+            for i in 0..ncol {
+                seps.push("-".repeat(widths[i]))
+            }
+            lines.push(seps.join("  "))
+        }
+    }
+    return lines.join("\n")
+}

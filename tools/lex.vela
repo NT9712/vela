@@ -1,0 +1,380 @@
+// tools/lex.vela — a Vela lexer, written in Vela.
+//
+// This is part of the self-hosted front end: `vela fmt` and `vela doc` use it
+// rather than the bootstrap compiler's C lexer. Keeping a second independent
+// implementation of the same specification is also how we catch places where
+// the spec and the bootstrap compiler have drifted apart.
+
+pub enum Tok {
+    Eof,
+    Newline(Int),      // payload: number of *blank* lines that followed
+    Ident(Str),
+    Keyword(Str),
+    Int(Str),
+    Float(Str),
+    Str(Str),          // raw source text including quotes
+    Char(Str),
+    Punct(Str),
+    Doc(Str),
+    Comment(Str),      // `//` comment, text without the slashes
+    BlockComment(Str),
+}
+
+pub struct Token {
+    kind: Tok,
+    line: Int,
+    col: Int,
+    /// True when this token was the first thing on its source line.
+    bol: Bool,
+}
+
+pub const KEYWORDS: [Str] = ["and", "as", "break", "const", "continue", "else",
+    "enum", "false", "fn", "for", "if", "in", "let", "match", "mut", "nil",
+    "not", "or", "pub", "return", "struct", "test", "true", "type", "use",
+    "self", "while"]
+
+struct Lexer {
+    src: Str,
+    i: Int,
+    line: Int,
+    col: Int,
+    n: Int,
+    errors: [Str],
+}
+
+/// Split `src` into tokens. Comments and newlines are preserved so that the
+/// formatter can reproduce the author's paragraph structure.
+pub fn tokenize(src: Str) -> ![Token] {
+    let lx = Lexer{ src: src, i: 0, line: 1, col: 1, n: len(src), errors: [] }
+    let out: [Token] = []
+    let mut bol = true
+    while lx.i < lx.n {
+        lx.skip_spaces()
+        if lx.i >= lx.n {
+            break
+        }
+        let line = lx.line
+        let col = lx.col
+        let c = lx.src[lx.i]
+        if c == '\n' {
+            lx.bump()
+            let mut blanks = 0
+            while true {
+                let save = lx.i
+                lx.skip_spaces()
+                if lx.i < lx.n and lx.src[lx.i] == '\n' {
+                    lx.bump()
+                    blanks += 1
+                } else {
+                    lx.i = save
+                    break
+                }
+            }
+            out.push(Token{ kind: Tok.Newline(blanks), line: line, col: col, bol: bol })
+            bol = true
+            continue
+        }
+        let t = lx.one(line, col, bol)?
+        out.push(t)
+        bol = false
+    }
+    out.push(Token{ kind: Tok.Eof, line: lx.line, col: lx.col, bol: true })
+    if len(lx.errors) > 0 {
+        return err(lx.errors[0])
+    }
+    return ok(out)
+}
+
+fn Lexer.bump(self) -> Byte {
+    let c = self.src[self.i]
+    self.i += 1
+    if c == '\n' {
+        self.line += 1
+        self.col = 1
+    } else {
+        self.col += 1
+    }
+    return c
+}
+
+fn Lexer.peek(self, k: Int) -> Byte {
+    if self.i + k >= self.n {
+        return byte(0)
+    }
+    return self.src[self.i + k]
+}
+
+fn Lexer.skip_spaces(self) {
+    while self.i < self.n {
+        let c = self.src[self.i]
+        if c == ' ' or c == '\t' or c == '\r' {
+            self.bump()
+        } else {
+            return
+        }
+    }
+}
+
+fn is_ident_start(c: Byte) -> Bool {
+    return c.is_alpha() or c == '_'
+}
+
+fn is_ident(c: Byte) -> Bool {
+    return c.is_alnum() or c == '_'
+}
+
+fn Lexer.one(self, line: Int, col: Int, bol: Bool) -> !Token {
+    let c = self.src[self.i]
+
+    if c == '/' and self.peek(1) == '/' {
+        if self.peek(2) == '/' {
+            self.bump()
+            self.bump()
+            self.bump()
+            if self.i < self.n and self.src[self.i] == ' ' {
+                self.bump()
+            }
+            let start = self.i
+            while self.i < self.n and self.src[self.i] != '\n' {
+                self.bump()
+            }
+            return ok(Token{ kind: Tok.Doc(self.src[start..self.i]), line: line, col: col, bol: bol })
+        }
+        self.bump()
+        self.bump()
+        let start = self.i
+        while self.i < self.n and self.src[self.i] != '\n' {
+            self.bump()
+        }
+        return ok(Token{ kind: Tok.Comment(self.src[start..self.i]), line: line, col: col, bol: bol })
+    }
+
+    if c == '/' and self.peek(1) == '*' {
+        let start = self.i
+        let mut depth = 0
+        while self.i < self.n {
+            if self.src[self.i] == '/' and self.peek(1) == '*' {
+                depth += 1
+                self.bump()
+                self.bump()
+            } else if self.src[self.i] == '*' and self.peek(1) == '/' {
+                depth -= 1
+                self.bump()
+                self.bump()
+                if depth == 0 {
+                    break
+                }
+            } else {
+                self.bump()
+            }
+        }
+        if depth != 0 {
+            self.errors.push("{line}:{col}: unterminated block comment")
+        }
+        return ok(Token{ kind: Tok.BlockComment(self.src[start..self.i]), line: line, col: col, bol: bol })
+    }
+
+    if is_ident_start(c) {
+        let start = self.i
+        while self.i < self.n and is_ident(self.src[self.i]) {
+            self.bump()
+        }
+        let word = self.src[start..self.i]
+        if KEYWORDS.contains(word) {
+            return ok(Token{ kind: Tok.Keyword(word), line: line, col: col, bol: bol })
+        }
+        return ok(Token{ kind: Tok.Ident(word), line: line, col: col, bol: bol })
+    }
+
+    if c.is_digit() {
+        let start = self.i
+        let mut isf = false
+        if c == '0' and (self.peek(1) == 'x' or self.peek(1) == 'b' or self.peek(1) == 'o') {
+            self.bump()
+            self.bump()
+            while self.i < self.n and (is_ident(self.src[self.i])) {
+                self.bump()
+            }
+            return ok(Token{ kind: Tok.Int(self.src[start..self.i]), line: line, col: col, bol: bol })
+        }
+        while self.i < self.n and (self.src[self.i].is_digit() or self.src[self.i] == '_') {
+            self.bump()
+        }
+        if self.i < self.n and self.src[self.i] == '.' and self.peek(1).is_digit() {
+            isf = true
+            self.bump()
+            while self.i < self.n and (self.src[self.i].is_digit() or self.src[self.i] == '_') {
+                self.bump()
+            }
+        }
+        if self.i < self.n and (self.src[self.i] == 'e' or self.src[self.i] == 'E') {
+            let nx = self.peek(1)
+            if nx.is_digit() or ((nx == '+' or nx == '-') and self.peek(2).is_digit()) {
+                isf = true
+                self.bump()
+                if self.src[self.i] == '+' or self.src[self.i] == '-' {
+                    self.bump()
+                }
+                while self.i < self.n and self.src[self.i].is_digit() {
+                    self.bump()
+                }
+            }
+        }
+        let text = self.src[start..self.i]
+        if isf {
+            return ok(Token{ kind: Tok.Float(text), line: line, col: col, bol: bol })
+        }
+        return ok(Token{ kind: Tok.Int(text), line: line, col: col, bol: bol })
+    }
+
+    if c == '"' {
+        let start = self.i
+        self.bump()
+        let mut depth = 0
+        while self.i < self.n {
+            let d = self.src[self.i]
+            if d == '\\' {
+                self.bump()
+                if self.i < self.n {
+                    self.bump()
+                }
+                continue
+            }
+            if d == '\n' {
+                self.errors.push("{line}:{col}: unterminated string literal")
+                break
+            }
+            if d == '{' {
+                depth += 1
+            }
+            if d == '}' and depth > 0 {
+                depth -= 1
+            }
+            self.bump()
+            if d == '"' and depth == 0 {
+                return ok(Token{ kind: Tok.Str(self.src[start..self.i]), line: line, col: col, bol: bol })
+            }
+        }
+        self.errors.push("{line}:{col}: unterminated string literal")
+        return ok(Token{ kind: Tok.Str(self.src[start..self.i]), line: line, col: col, bol: bol })
+    }
+
+    if c == '\'' {
+        let start = self.i
+        self.bump()
+        while self.i < self.n {
+            let d = self.src[self.i]
+            if d == '\\' {
+                self.bump()
+                if self.i < self.n {
+                    self.bump()
+                }
+                continue
+            }
+            self.bump()
+            if d == '\'' {
+                return ok(Token{ kind: Tok.Char(self.src[start..self.i]), line: line, col: col, bol: bol })
+            }
+        }
+        self.errors.push("{line}:{col}: unterminated character literal")
+        return ok(Token{ kind: Tok.Char(self.src[start..self.i]), line: line, col: col, bol: bol })
+    }
+
+    // punctuation, longest match first
+    let three = ["..="]
+    let two = ["..", "->", "=>", "==", "!=", "<=", ">=", "<<", ">>", "??",
+               "+=", "-=", "*=", "/=", "%="]
+    if self.i + 3 <= self.n {
+        let s3 = self.src[self.i..self.i + 3]
+        if three.contains(s3) {
+            self.bump()
+            self.bump()
+            self.bump()
+            return ok(Token{ kind: Tok.Punct(s3), line: line, col: col, bol: bol })
+        }
+    }
+    if self.i + 2 <= self.n {
+        let s2 = self.src[self.i..self.i + 2]
+        if two.contains(s2) {
+            self.bump()
+            self.bump()
+            return ok(Token{ kind: Tok.Punct(s2), line: line, col: col, bol: bol })
+        }
+    }
+    let singles = "()[]{{}},.:;+-*/%=<>&|^~?!@"
+    if singles.contains(c.str()) {
+        self.bump()
+        return ok(Token{ kind: Tok.Punct(c.str()), line: line, col: col, bol: bol })
+    }
+    self.errors.push("{line}:{col}: unexpected character '{c.str()}'")
+    self.bump()
+    return ok(Token{ kind: Tok.Punct(c.str()), line: line, col: col, bol: bol })
+}
+
+/// The source text of a token, exactly as it appeared.
+pub fn Token.text(self) -> Str {
+    return match self.kind {
+        Tok.Eof => "",
+        Tok.Newline(_) => "\n",
+        Tok.Ident(s) => s,
+        Tok.Keyword(s) => s,
+        Tok.Int(s) => s,
+        Tok.Float(s) => s,
+        Tok.Str(s) => s,
+        Tok.Char(s) => s,
+        Tok.Punct(s) => s,
+        Tok.Doc(s) => "/// " + s,
+        Tok.Comment(s) => "//" + s,
+        Tok.BlockComment(s) => s,
+    }
+}
+
+/// True when this token is the punctuation `p`.
+pub fn Token.is_punct(self, p: Str) -> Bool {
+    return match self.kind {
+        Tok.Punct(s) => s == p,
+        _ => false,
+    }
+}
+
+/// True when this token is the keyword `k`.
+pub fn Token.is_kw(self, k: Str) -> Bool {
+    return match self.kind {
+        Tok.Keyword(s) => s == k,
+        _ => false,
+    }
+}
+
+/// True for newline tokens.
+pub fn Token.is_newline(self) -> Bool {
+    return match self.kind {
+        Tok.Newline(_) => true,
+        _ => false,
+    }
+}
+
+/// Number of blank lines recorded after a newline token.
+pub fn Token.blanks(self) -> Int {
+    return match self.kind {
+        Tok.Newline(n) => n,
+        _ => 0,
+    }
+}
+
+/// True for `//` and `/* */` comments and doc comments.
+pub fn Token.is_comment(self) -> Bool {
+    return match self.kind {
+        Tok.Comment(_) => true,
+        Tok.BlockComment(_) => true,
+        Tok.Doc(_) => true,
+        _ => false,
+    }
+}
+
+/// True at end of input.
+pub fn Token.is_eof(self) -> Bool {
+    return match self.kind {
+        Tok.Eof => true,
+        _ => false,
+    }
+}
