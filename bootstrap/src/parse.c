@@ -681,8 +681,13 @@ static int looks_like_targs(P *p) {
 
 static Expr *parse_postfix(P *p) {
     Expr *e = parse_primary(p);
+    int iters = 0;
     for (;;) {
         Span sp = cur(p)->span;
+        if (++iters > 4096) {
+            perr(p, sp, "expression has too many `.`/`()`/`[]` suffixes (limit 4096)");
+            break;
+        }
         if (at(p, T_DOT)) {
             adv(p);
             if (at(p, T_INT)) {   /* tuple-ish access is not supported; give a good error */
@@ -851,10 +856,16 @@ static Expr *parse_binary(P *p, int min_prec) {
         return mkexpr(p, E_INT, cur(p)->span);
     }
     Expr *lhs = parse_unary(p);
+    int iters = 0;
     for (;;) {
         TokKind k = K(p);
         int pr = prec_of(k);
         if (pr == 0 || pr < min_prec) break;
+        if (++iters > 4096) {
+            perr(p, cur(p)->span,
+                 "expression has too many operands (limit 4096); split it into `let` bindings");
+            break;
+        }
         Span opsp = cur(p)->span;
         adv(p);
         skip_nl(p);
@@ -1177,13 +1188,18 @@ static Decl *parse_decl(P *p, int is_pub, const char *doc) {
                 break;
             }
             buf_u8(&path, 0);
-            d->path = intern((char *)path.data);
+            d->path = path.data ? intern((char *)path.data) : intern("");
             buf_free(&path);
             if (accept(p, T_AS)) {
                 Tok *a = expect(p, T_IDENT, "as import alias");
                 d->alias = a ? a->text : last;
             } else d->alias = last;
+            if (!d->alias) d->alias = intern("_bad_import");
             d->name = d->alias;
+            if (!last || !*d->path) {
+                perr(p, sp, "expected a module path after `use`, e.g. `use std/io`");
+                d->path = NULL;
+            }
             d->span = join(sp, p->t[p->i - 1].span);
             end_stmt(p);
             break;

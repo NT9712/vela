@@ -1,0 +1,22 @@
+// EXPECT:
+// HELLO hello 5
+// [a, b, c] a-b-c
+// true false 2
+// He llo Hello
+// 42 3.5 nil
+// x=1 y=2 {literal} }
+// abcabc
+// [104, 105]
+fn main() {
+    let s = "Hello"
+    println("{s.upper()} {s.lower()} {len(s)}")
+    println("{"a,b,c".split(",")} {"a,b,c".split(",").join("-")}")
+    println("{s.starts_with("He")} {s.ends_with("x")} {"hello".index_of("l")}")
+    println("{s[0..2]} {s[2..len(s)]} {s.trim()}")
+    println("{"42".to_int() ?? 0} {"3.5".to_float() ?? 0.0} {"x".to_int()}")
+    let x = 1
+    let y = 2
+    println("x={x} y={y} {{literal}} }}")
+    println("{"abc".repeat(2)}")
+    println("{"hi".bytes()}")
+}

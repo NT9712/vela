@@ -1,0 +1,6 @@
+// ERROR: cannot find `lenght` in this scope
+// ERROR: did you mean `length`?
+fn main() {
+    let length = 3
+    println("{lenght}")
+}

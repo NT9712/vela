@@ -187,21 +187,36 @@ pub fn pow(base: Float, e: Float) -> Float {
 }
 
 /// Arctangent.
+///
+/// The Gregory series converges far too slowly near |x| = 1, so the argument
+/// is first halved with `atan(x) = 2 atan(x / (1 + sqrt(1 + x^2)))` until it is
+/// small enough for the series to converge quickly.
 pub fn atan(x: Float) -> Float {
+    if x < 0.0 {
+        return -atan(-x)
+    }
     if x > 1.0 {
         return PI / 2.0 - atan(1.0 / x)
     }
-    if x < -1.0 {
-        return -PI / 2.0 - atan(1.0 / x)
+    let mut v = x
+    let mut halvings = 0
+    while v > 0.1 {
+        v = v / (1.0 + (1.0 + v * v).sqrt())
+        halvings += 1
     }
-    let x2 = x * x
-    let mut term = x
-    let mut sum = x
+    let v2 = v * v
+    let mut term = v
+    let mut sum = v
     let mut n = 1
-    while n < 60 {
-        term = -term * x2
+    while n < 20 {
+        term = -term * v2
         sum = sum + term / float(2 * n + 1)
         n += 1
+    }
+    let mut i = 0
+    while i < halvings {
+        sum = sum * 2.0
+        i += 1
     }
     return sum
 }

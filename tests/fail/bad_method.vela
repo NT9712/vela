@@ -1,0 +1,5 @@
+// ERROR: has no method `lenght`
+// ERROR: did you mean `.len()`?
+fn main() {
+    println("{"abc".lenght()}")
+}

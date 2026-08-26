@@ -1,0 +1,10 @@
+// ERROR: cannot add `Str` and `Int`
+// ERROR: expected `Str + Str`
+// ERROR: found    `Str + Int`
+// ERROR: convert the right side with `str(x)`
+fn main() {
+    let name = "bob"
+    let age = 30
+    let result = name + age
+    println(result)
+}

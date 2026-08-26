@@ -54,11 +54,11 @@ const RT_GC_OFF: Int = 112
 const RT_NCHUNKS: Int = 120
 const RT_CHUNKLIST: Int = 128
 const RT_CHUNKCAP: Int = 136
-const RT_CLASSES: Int = 144        // 20 words
-const RT_LIVE: Int = 304
-const RT_TESTS_RUN: Int = 312
-const RT_TESTS_FAIL: Int = 320
-const RT_TEST_NAME: Int = 328
+const RT_CLASSES: Int = 144        // 21 words: 144..311
+const RT_LIVE: Int = 320
+const RT_TESTS_RUN: Int = 328
+const RT_TESTS_FAIL: Int = 336
+const RT_TEST_NAME: Int = 344
 const RT_NGLOBALS: Int = 360
 const RT_GLOBALS: Int = 512
 
@@ -79,7 +79,7 @@ const CH_NOBJ: Int = 24
 const CH_ALLOC_BM: Int = 64
 const CH_MARK_BM: Int = 576
 
-const NCLASS: Int = 20
+const NCLASS: Int = 21
 const MAX_SMALL: Int = 3328
 
 const KIND_ATOMIC: Int = 0
@@ -1752,6 +1752,17 @@ pub fn test_begin(name: Str) {
 }
 
 pub fn test_pass() {
+    print_str("ok\n")
+}
+
+/// Report the outcome of one test, given the `!Void` its body returned.
+pub fn test_finish(r: Int) {
+    if r != 0 and @load64(r + 16) != 0 {
+        let e = @load64(r + 24)
+        rts(RT_TESTS_FAIL, rtl(RT_TESTS_FAIL) + 1)
+        print_str("FAILED: " + @ref[Str](@load64(e + 16)) + "\n")
+        return
+    }
     print_str("ok\n")
 }
 

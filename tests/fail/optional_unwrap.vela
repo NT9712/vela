@@ -1,0 +1,7 @@
+// ERROR: type mismatch
+// ERROR: unwrap with `x ?? default`
+fn main() {
+    let m = { "a": 1 }
+    let v: Int = m["a"]
+    println("{v}")
+}

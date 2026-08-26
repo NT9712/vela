@@ -68,6 +68,7 @@ static void normalize(char *p) {
 }
 
 Module *load_module(const char *modpath, const char *fromfile, Span sp) {
+    if (!modpath || !*modpath) return NULL;
     /* already loaded? */
     for (int i = 0; i < g_unit.modules.len; i++) {
         Module *m = VEC_AT(&g_unit.modules, Module, i);

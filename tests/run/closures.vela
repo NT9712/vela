@@ -1,0 +1,24 @@
+// EXPECT:
+// [2, 4, 6]
+// [1, 3]
+// 21
+// counter: 1 2 3
+// adder: 15
+// captured mut: 10
+fn main() {
+    let xs = [1, 2, 3]
+    println("{xs.map(|v| v * 2)}")
+    println("{xs.filter(|v| v % 2 == 1)}")
+    println("{[1, 2, 3, 4, 5, 6].fold(0, |a, b| a + b)}")
+    let mut n = 0
+    let bump = || { n += 1; n }
+    println("counter: {bump()} {bump()} {bump()}")
+    let add = make_adder(10)
+    println("adder: {add(5)}")
+    let mut total = 0
+    [1, 2, 3, 4].each(|v| { total += v })
+    println("captured mut: {total}")
+}
+fn make_adder(k: Int) -> fn(Int) -> Int {
+    return |v| v + k
+}

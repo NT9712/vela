@@ -1,0 +1,212 @@
+// Tests for the standard library's public surface.
+use std/path
+use std/math
+use std/fmt
+use std/sort
+use std/json
+use std/rand
+use std/time
+use std/fs
+use std/os
+
+test "list methods" {
+    let xs = [3, 1, 2]
+    assert_eq(len(xs), 3)
+    assert_eq(xs.index_of(2), 2)
+    assert(xs.contains(1))
+    assert(not xs.contains(9))
+    xs.push(4)
+    assert_eq(xs.pop(), 4)
+    assert_eq(xs.map(|v| v * 2), [6, 2, 4])
+    assert_eq(xs.filter(|v| v > 1), [3, 2])
+    assert_eq(xs.fold(0, |a, b| a + b), 6)
+    assert_eq(xs.join("-"), "3-1-2")
+    xs.reverse()
+    assert_eq(xs, [2, 1, 3])
+    assert(xs.any(|v| v == 3))
+    assert(xs.all(|v| v > 0))
+    assert_eq(xs.first() ?? 0, 2)
+    assert_eq(xs.last() ?? 0, 3)
+    let ys = xs.copy()
+    ys.clear()
+    assert(ys.is_empty())
+    assert_eq(len(xs), 3)
+}
+
+test "map methods" {
+    let m = { "a": 1, "b": 2 }
+    assert_eq(m.len(), 2)
+    assert(m.has("a"))
+    assert_eq(m["a"] ?? 0, 1)
+    assert_eq(m["z"] ?? -1, -1)
+    m["c"] = 3
+    assert_eq(m.len(), 3)
+    assert(m.delete("c"))
+    assert(not m.delete("c"))
+    let ks = m.keys()
+    sort.strs(ks)
+    assert_eq(ks, ["a", "b"])
+    assert_eq(m.get_or("q", 9), 9)
+}
+
+test "string methods" {
+    assert_eq("Hello".upper(), "HELLO")
+    assert_eq("Hello".lower(), "hello")
+    assert_eq("  x  ".trim(), "x")
+    assert_eq("a,b".split(","), ["a", "b"])
+    assert_eq("a b  c".words(), ["a", "b", "c"])
+    assert_eq("l1\nl2\n".lines(), ["l1", "l2"])
+    assert_eq("abc".replace("b", "XY"), "aXYc")
+    assert_eq("ab".repeat(3), "ababab")
+    assert(("hello").starts_with("he"))
+    assert(("hello").ends_with("lo"))
+    assert_eq("hello".index_of("ll"), 2)
+    assert_eq("hello"[1..3], "el")
+    assert_eq("42".to_int() ?? 0, 42)
+    assert_eq("x".to_int(), nil)
+}
+
+test "path" {
+    assert_eq(path.join(["a", "b", "c"]), "a/b/c")
+    assert_eq(path.dir("/x/y/z.txt"), "/x/y")
+    assert_eq(path.base("/x/y/z.txt"), "z.txt")
+    assert_eq(path.ext("a.tar.gz"), ".gz")
+    assert_eq(path.stem("a.tar.gz"), "a.tar")
+    assert(path.is_absolute("/a"))
+    assert_eq(path.normalize("/a/b/../c/./d"), "/a/c/d")
+    assert_eq(path.normalize("a/../.."), "..")
+}
+
+test "math" {
+    assert_eq(math.sqrt(16.0), 4.0)
+    assert_eq(math.floor(2.7), 2.0)
+    assert_eq(math.ceil(2.1), 3.0)
+    assert_eq(math.round(2.5), 3.0)
+    assert_eq(math.abs(-2.0), 2.0)
+    assert(math.abs(math.sin(0.0)) < 1.0e-12)
+    assert(math.abs(math.cos(0.0) - 1.0) < 1.0e-12)
+    assert(math.abs(math.log(math.E) - 1.0) < 1.0e-12)
+    assert(math.abs(math.exp(0.0) - 1.0) < 1.0e-12)
+    assert(math.abs(math.pow(2.0, 10.0) - 1024.0) < 1.0e-9)
+    assert(math.abs(math.hypot(3.0, 4.0) - 5.0) < 1.0e-12)
+    assert(math.abs(math.atan2(1.0, 1.0) - math.PI / 4.0) < 1.0e-9)
+}
+
+test "numeric methods" {
+    assert_eq((-3).abs(), 3)
+    assert_eq((3).min(5), 3)
+    assert_eq((3).max(5), 5)
+    assert_eq((7).clamp(1, 5), 5)
+    assert_eq((255).hex(), "ff")
+    assert_eq((2.0).pow(8), 256.0)
+    assert_eq((-2.5).abs(), 2.5)
+    assert_eq((2.6).floor(), 2.0)
+    assert(('a').is_alpha())
+    assert(('1').is_digit())
+    assert((' ').is_space())
+}
+
+test "fmt" {
+    assert_eq(fmt.pad_left("x", 3), "  x")
+    assert_eq(fmt.pad_right("x", 3), "x  ")
+    assert_eq(fmt.zero_pad(7, 3), "007")
+    assert_eq(fmt.commas(1234567), "1,234,567")
+    assert_eq(fmt.fixed(3.14159, 2), "3.14")
+    assert_eq(fmt.fixed(-0.5, 1), "-0.5")
+}
+
+test "sort" {
+    let xs = [5, 3, 9, 1]
+    sort.ints(xs)
+    assert_eq(xs, [1, 3, 5, 9])
+    assert_eq(sort.search_ints(xs, 5), 2)
+    assert_eq(sort.search_ints(xs, 4), -1)
+    let ss = ["pear", "apple"]
+    sort.strs(ss)
+    assert_eq(ss, ["apple", "pear"])
+    assert(sort.is_sorted(xs, |a: Int, b: Int| a < b))
+}
+
+test "json round trip" {
+    let src = "{{\"a\":[1,2,{{\"b\":true}}],\"c\":null,\"d\":\"x\\ny\"}"
+    let v = json.parse(src)?
+    assert_eq(v.get("a")?.at(0)?.as_int()?, 1)
+    assert_eq(v.get("d")?.as_str()?, "x\ny")
+    let text = v.to_str()
+    let again = json.parse(text)?
+    assert_eq(again.to_str(), text)
+}
+
+test "json rejects bad input" {
+    match json.parse("{{") {
+        ok(_) => panic("should have failed"),
+        err(_) => {},
+    }
+    match json.parse("[1,]") {
+        ok(_) => panic("should have failed"),
+        err(_) => {},
+    }
+}
+
+test "rand is deterministic" {
+    rand.seed(1234)
+    let a = [rand.int_below(1000), rand.int_below(1000), rand.int_below(1000)]
+    rand.seed(1234)
+    let b = [rand.int_below(1000), rand.int_below(1000), rand.int_below(1000)]
+    assert_eq(a, b)
+    for v in a {
+        assert(v >= 0 and v < 1000)
+    }
+    let f = rand.float01()
+    assert(f >= 0.0 and f < 1.0)
+}
+
+test "time" {
+    let d = time.utc(0)
+    assert_eq(d.year, 1970)
+    assert_eq(d.month, 1)
+    assert_eq(d.day, 1)
+    let d2 = time.utc(1735689600)
+    assert_eq(d2.year, 2025)
+    assert_eq(d2.month, 1)
+    assert_eq(d2.day, 1)
+    assert(time.is_leap(2024))
+    assert(not time.is_leap(2100))
+    assert(time.now_s() > 1700000000)
+}
+
+test "filesystem" {
+    let p = "/tmp/vela-selftest-{os.pid()}.txt"
+    fs.write_file(p, "one\ntwo\n") ?? panic("write failed")
+    assert(fs.exists(p))
+    assert_eq(fs.size(p) ?? 0, 8)
+    assert_eq(fs.read_file(p) ?? "", "one\ntwo\n")
+    assert_eq(fs.read_lines(p) ?? [], ["one", "two"])
+    fs.append_file(p, "three\n") ?? panic("append failed")
+    assert_eq(len(fs.read_lines(p) ?? []), 3)
+    assert(fs.is_file(p))
+    assert(not fs.is_dir(p))
+    fs.remove(p) ?? panic("remove failed")
+    assert(not fs.exists(p))
+}
+
+test "os environment" {
+    let a = os.args()
+    assert(len(a) >= 1)
+    assert(len(os.cwd()) > 0)
+    let e = os.env()
+    assert(e.len() > 0)
+}
+
+test "gc survives churn" {
+    let live: [Str] = []
+    for i in 0..20000 {
+        let s = "item-{i}"
+        if i % 1000 == 0 {
+            live.push(s)
+        }
+    }
+    assert_eq(len(live), 20)
+    assert_eq(live[0], "item-0")
+    assert_eq(live[19], "item-19000")
+}

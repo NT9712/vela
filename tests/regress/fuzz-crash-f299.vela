@@ -1,0 +1,1 @@
+"{x}" : + ] "{x}" let 0x1f "{x}" - self self if 'a' "s" fn not nil ! ; "s" const == enum Int pub -> main Str type use . else "{x}" [ ! pub or < ( "{x}" ! * std/io ) test

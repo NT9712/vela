@@ -1,0 +1,7 @@
+// ERROR: must return a value of type `Int` on every path
+fn f(n: Int) -> Int {
+    if n > 0 {
+        return 1
+    }
+}
+fn main() { println("{f(1)}") }

@@ -1,0 +1,5 @@
+// ERROR: comparison operators cannot be chained
+fn main() {
+    let a = 1
+    if 1 < a < 3 { println("yes") }
+}

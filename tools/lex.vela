@@ -244,12 +244,15 @@ fn Lexer.one(self, line: Int, col: Int, bol: Bool) -> !Token {
                 self.errors.push("{line}:{col}: unterminated string literal")
                 break
             }
-            if d == '{' and self.peek(1) == '{' {
+            // `{{` and `}}` are literal-brace escapes, but only outside an
+            // interpolation: inside one, `}}` can close a struct literal and
+            // then the interpolation itself.
+            if depth == 0 and d == '{' and self.peek(1) == '{' {
                 self.bump()
                 self.bump()
                 continue
             }
-            if d == '}' and self.peek(1) == '}' {
+            if depth == 0 and d == '}' and self.peek(1) == '}' {
                 self.bump()
                 self.bump()
                 continue

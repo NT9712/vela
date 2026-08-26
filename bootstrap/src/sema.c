@@ -56,6 +56,7 @@ static FnCtx  *cur_fn;
 static Vec     work_queue;      /* FnInst* pending body check */
 static Vec     inst_stack;      /* Span* instantiation trace */
 static int     sema_errors;
+static int     sema_quiet;
 
 /* method table: (typekey, name) -> Decl* */
 typedef struct MEnt { const char *key; const char *name; Decl *d; struct MEnt *next; } MEnt;
@@ -111,6 +112,7 @@ static const char *typekey(Type *t) {
 /* ------------------------------------------------------------------ */
 
 static Diag *serr(Span sp, const char *fmt, ...) {
+    if (sema_quiet) return NULL;
     va_list ap; va_start(ap, fmt);
     char msg[1024];
     vsnprintf(msg, sizeof msg, fmt, ap);
@@ -126,6 +128,7 @@ static Diag *serr(Span sp, const char *fmt, ...) {
 }
 
 static void swarn(Span sp, const char *fmt, ...) {
+    if (sema_quiet) return;
     va_list ap; va_start(ap, fmt);
     char msg[1024];
     vsnprintf(msg, sizeof msg, fmt, ap);
@@ -329,8 +332,9 @@ static Type *struct_instance(Decl *d, Vec *targs, Span sp) {
     vec_push(&all_insts, t);
 
     Subst sub; memset(&sub, 0, sizeof sub);
-    for (int j = 0; j < d->generics.len && j < targs->len; j++)
-        subst_put(&sub, (const char *)d->generics.data[j], VEC_AT(targs, Type, j));
+    for (int j = 0; j < d->generics.len; j++)
+        subst_put(&sub, (const char *)d->generics.data[j],
+                  j < targs->len ? VEC_AT(targs, Type, j) : ty_any);
 
     if (d->kind == D_STRUCT) {
         for (int i = 0; i < d->fields.len; i++) {
@@ -525,6 +529,24 @@ static FnInst *instantiate(Decl *d, Vec *targs, Span sp) {
 /* ------------------------------------------------------------------ */
 
 static Type *check_expr(Expr *e, Type *want);
+
+/* Forget the results of a speculative type-check so the expression can be
+   re-checked once inference has settled. */
+static void clear_types(Expr *e) {
+    if (!e) return;
+    e->type = NULL; e->target = NULL; e->sym = NULL; e->extra = NULL;
+    clear_types(e->a); clear_types(e->b); clear_types(e->c);
+    if (e->kind == E_STRUCT)
+        for (int i = 0; i < e->list.len; i++)
+            clear_types(VEC_AT(&e->list, FieldInit, i)->value);
+    else if (e->kind == E_MATCH)
+        for (int i = 0; i < e->list.len; i++) {
+            MatchArm *a = VEC_AT(&e->list, MatchArm, i);
+            clear_types(a->guard); clear_types(a->body);
+        }
+    else
+        for (int i = 0; i < e->list.len; i++) clear_types(VEC_AT(&e->list, Expr, i));
+}
 static void check_stmt(Stmt *s);
 static void check_block(Stmt *s, Scope *sc);
 static void check_stmts(Stmt *s, Scope *sc);
@@ -789,8 +811,11 @@ static Type *check_static_call(Expr *e, Decl *d, Vec *explicit_targs, Expr *recv
                 }
                 continue;
             }
+            int q = sema_quiet; sema_quiet = 1;
             Type *at = check_expr(a, NULL);
+            sema_quiet = q;
             unify(p->type, at, &sub, d->mod);
+            clear_types(a);
         }
         for (int i = 0; i < d->generics.len; i++) {
             if (!VEC_AT(&sub.types, Type, i)) {
@@ -1078,12 +1103,22 @@ static Type *check_binary(Expr *e) {
 
     /* arithmetic / bitwise */
     if (!ty_eq(a, b)) {
-        Diag *d = serr(e->span, "cannot apply `%s` to `%s` and `%s`",
-                       tok_names[op], ty_str_of(a), ty_str_of(b));
+        const char *verb = op == T_PLUS ? "add" : op == T_MINUS ? "subtract" :
+                           op == T_STAR ? "multiply" : op == T_SLASH ? "divide" : NULL;
+        Diag *d;
+        if (verb)
+            d = serr(e->span, "cannot %s `%s` and `%s`", verb, ty_str_of(a), ty_str_of(b));
+        else
+            d = serr(e->span, "cannot apply `%s` to `%s` and `%s`",
+                     tok_names[op], ty_str_of(a), ty_str_of(b));
+        diag_note(d, NOSPAN, "expected `%s %s %s`", ty_str_of(a), tok_names[op], ty_str_of(a));
+        diag_note(d, NOSPAN, "found    `%s %s %s`", ty_str_of(a), tok_names[op], ty_str_of(b));
         if ((a->kind == TY_INT && b->kind == TY_FLOAT) || (a->kind == TY_FLOAT && b->kind == TY_INT))
             diag_note(d, NOSPAN, "help: Vela has no implicit numeric conversion; use `float(x)` or `int(x)`");
-        else if (a->kind == TY_STR || b->kind == TY_STR)
-            diag_note(d, NOSPAN, "help: use `str(x)` or interpolation `\"{x}\"` to build strings");
+        else if (a->kind == TY_STR)
+            diag_note(d, NOSPAN, "help: convert the right side with `str(x)`, or write `\"{a}{b}\"`");
+        else if (b->kind == TY_STR)
+            diag_note(d, NOSPAN, "help: convert the left side with `str(x)`, or write `\"{a}{b}\"`");
         return a;
     }
     switch (a->kind) {
@@ -1258,6 +1293,31 @@ static Type *module_member(Expr *e, Module *m, const char *name, Vec *args,
 
 static Type *check_builtin(Expr *e, int bi, Vec *args, Span sp);
 
+/* Does `base` name a type? Handles both `Shape` and `json.Json`. */
+static Decl *type_path(Expr *base) {
+    if (!base) return NULL;
+    if (base->kind == E_IDENT) {
+        Sym *s = scope_get(cur_fn->scope, base->name);
+        if (s && s->kind == SYM_TYPE) { base->sym = s; return s->decl; }
+        return NULL;
+    }
+    if (base->kind == E_FIELD && base->a && base->a->kind == E_IDENT) {
+        Sym *ms = scope_get(cur_fn->scope, base->a->name);
+        if (!ms || ms->kind != SYM_MOD) return NULL;
+        base->a->sym = ms;
+        Decl *d = NULL;
+        for (int i = 0; i < ms->mod->decls.len; i++) {
+            Decl *c = VEC_AT(&ms->mod->decls, Decl, i);
+            if ((c->kind == D_STRUCT || c->kind == D_ENUM) && c->name == base->name) { d = c; break; }
+        }
+        if (d && !d->is_pub && ms->mod != cur_mod) {
+            serr(base->span, "type `%s.%s` is private", base->a->name, base->name);
+        }
+        return d;
+    }
+    return NULL;
+}
+
 static Type *check_expr(Expr *e, Type *want) {
     if (!e) return ty_void;
     if (e->type) return e->type;
@@ -1422,8 +1482,11 @@ static Type *check_expr(Expr *e, Type *want) {
                     int solved = 1;
                     for (int j = 0; j < sub.types.len; j++) if (!sub.types.data[j]) solved = 0;
                     if (solved) break;
+                    int q = sema_quiet; sema_quiet = 1;
                     Type *at = check_expr(fi->value, NULL);
+                    sema_quiet = q;
                     unify(VEC_AT(&d->fields, StructField, idx)->type, at, &sub, d->mod);
+                    clear_types(fi->value);
                 }
                 for (int i = 0; i < d->generics.len; i++)
                     if (!sub.types.data[i]) {
@@ -1478,6 +1541,37 @@ static Type *check_expr(Expr *e, Type *want) {
         }
         case E_LAMBDA: r = check_lambda(e, want); break;
         case E_FIELD: {
+            {
+                Decl *ed = type_path(e->a);
+                if (ed && ed->kind == D_ENUM) {
+                    Vec no; memset(&no, 0, sizeof no);
+                    Type *et = struct_instance(ed, &no, e->span);
+                    if (ed->generics.len) {
+                        if (want && want->kind == TY_ENUM && want->decl == ed) et = want;
+                        else serr(e->span, "cannot infer type arguments for `%s`", ed->name);
+                    }
+                    int v = enum_variant_index(et, e->name);
+                    if (v < 0) {
+                        Diag *d = serr(e->span, "`%s` has no variant `%s`", ed->name, e->name);
+                        for (int i = 0; i < ed->variants.len; i++) {
+                            EnumVariant *ev = VEC_AT(&ed->variants, EnumVariant, i);
+                            if (edit_dist(e->name, ev->name) <= 2) {
+                                diag_note(d, NOSPAN, "did you mean `%s.%s`?", ed->name, ev->name);
+                                break;
+                            }
+                        }
+                        r = et; break;
+                    }
+                    if (enum_payload_count(et, v) != 0)
+                        serr(e->span, "variant `%s.%s` needs %d argument%s",
+                             ed->name, e->name, enum_payload_count(et, v),
+                             enum_payload_count(et, v) == 1 ? "" : "s");
+                    e->idx = v;
+                    e->builtin = -1;
+                    e->type = et;
+                    return et;
+                }
+            }
             /* module member? */
             if (e->a->kind == E_IDENT) {
                 Sym *s = scope_get(cur_fn->scope, e->a->name);
@@ -1512,7 +1606,6 @@ static Type *check_expr(Expr *e, Type *want) {
                              s->decl->name, e->name, enum_payload_count(et, v),
                              enum_payload_count(et, v) == 1 ? "" : "s");
                     }
-                    e->kind = E_STRUCT;   /* reuse: enum construction */
                     e->idx = v;
                     e->builtin = -1;      /* marks enum construction */
                     e->type = et;
@@ -1556,9 +1649,27 @@ static Type *check_expr(Expr *e, Type *want) {
             break;
         }
         case E_METHOD: {
+            if (e->a->kind == E_FIELD) {
+                Decl *ed = type_path(e->a);
+                if (ed && ed->kind == D_ENUM) {
+                    Expr *fake = NEW(Expr);
+                    *fake = *e->a;
+                    Expr *id = NEW(Expr);
+                    memset(id, 0, sizeof *id);
+                    id->kind = E_IDENT;
+                    id->span = e->a->span;
+                    id->name = e->a->name;
+                    Sym *ts = NEW(Sym);
+                    ts->kind = SYM_TYPE; ts->name = ed->name; ts->decl = ed;
+                    ts->span = ed->span; ts->mod = ed->mod;
+                    id->sym = ts;
+                    e->a = id;
+                }
+            }
             /* module function call? */
             if (e->a->kind == E_IDENT) {
-                Sym *s = scope_get(cur_fn->scope, e->a->name);
+                Sym *s = (Sym *)e->a->sym;
+                if (!s) s = scope_get(cur_fn->scope, e->a->name);
                 if (s && s->kind == SYM_MOD) {
                     e->a->sym = s;
                     Vec targs; memset(&targs, 0, sizeof targs);
@@ -1598,8 +1709,12 @@ static Type *check_expr(Expr *e, Type *want) {
                     EnumVariant *ev = VEC_AT(&ed->variants, EnumVariant, v);
                     if (ed->generics.len) {
                         for (int i = 0; i < e->list.len && i < ev->types.len; i++) {
-                            Type *at = check_expr(VEC_AT(&e->list, Expr, i), NULL);
+                            Expr *ai = VEC_AT(&e->list, Expr, i);
+                            int q = sema_quiet; sema_quiet = 1;
+                            Type *at = check_expr(ai, NULL);
+                            sema_quiet = q;
                             unify(VEC_AT(&ev->types, TypeExpr, i), at, &sub, ed->mod);
+                            clear_types(ai);
                         }
                         for (int i = 0; i < ed->generics.len; i++)
                             if (!sub.types.data[i]) {
@@ -1627,7 +1742,6 @@ static Type *check_expr(Expr *e, Type *want) {
                     }
                     e->idx = v;
                     e->builtin = -1;
-                    e->kind = E_STRUCT;      /* lowered as enum construction */
                     e->type = et;
                     return et;
                 }
@@ -1639,9 +1753,10 @@ static Type *check_expr(Expr *e, Type *want) {
                 Diag *dg = serr(e->span, "`%s` has no method `%s`", ty_str_of(recv), e->name);
                 const char *k = typekey(recv);
                 if (k) {
+                    int lim = (int)strlen(e->name) >= 5 ? 3 : 2;
                     for (int i = 0; i < MTAB_N; i++)
                         for (MEnt *me = mtab[i]; me; me = me->next)
-                            if (me->key == k && edit_dist(e->name, me->name) <= 2) {
+                            if (me->key == k && edit_dist(e->name, me->name) <= lim) {
                                 diag_note(dg, NOSPAN, "did you mean `.%s()`?", me->name);
                                 i = MTAB_N; break;
                             }
@@ -2420,7 +2535,8 @@ static void check_fn_body(FnInst *fi) {
 
     check_block(d->body, fc.scope);
 
-    if (fc.ret && fc.ret->kind != TY_VOID && !block_returns(d->body)) {
+    if (fc.ret && fc.ret->kind != TY_VOID && !block_returns(d->body) &&
+        !fi->is_test && d->name != intern("$test")) {
         Diag *dg = serr(d->span, "`%s` must return a value of type `%s` on every path",
                         d->name, ty_str_of(fc.ret));
         diag_note(dg, NOSPAN, "help: add a `return` at the end of the function");
@@ -2719,6 +2835,12 @@ int sema_run(Unit *u) {
                 *fd = *d;
                 fd->kind = D_FN;
                 fd->name = intern("$test");
+                /* a test body is a `!Void` function so `?` works inside it */
+                TypeExpr *vt = NEW(TypeExpr);
+                vt->kind = TE_NAME; vt->name = intern("Void"); vt->span = d->span;
+                TypeExpr *rt = NEW(TypeExpr);
+                rt->kind = TE_RES; rt->sub = vt; rt->span = d->span;
+                fd->ret = rt;
                 FnInst *fi = instantiate(fd, NULL, d->span);
                 if (fi) { fi->is_test = 1; fi->test_name = d->name; vec_push(&u->tests, fi); }
             }

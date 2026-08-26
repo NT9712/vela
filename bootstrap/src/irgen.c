@@ -419,7 +419,7 @@ static int may_branch(Expr *e) {
         default: break;
     }
     if (may_branch(e->a) || may_branch(e->b) || may_branch(e->c)) return 1;
-    if (e->kind == E_STRUCT && e->builtin != -1) {
+    if (e->kind == E_STRUCT) {
         for (int i = 0; i < e->list.len; i++)
             if (may_branch(VEC_AT(&e->list, FieldInit, i)->value)) return 1;
         return 0;
@@ -545,9 +545,10 @@ static int gen_lambda(Gen *g, Expr *e) {
     return p;
 }
 
-static int gen_struct_lit(Gen *g, Expr *e) {
+/* enum construction: `Shape.Circle(2.0)` or `Color.Red` */
+static int gen_enum_lit(Gen *g, Expr *e) {
     Type *t = e->type;
-    if (e->builtin == -1) {
+    {
         if (t->is_prim) return emit_const(g, e->idx);
         int np = enum_payload_count(t, e->idx);
         if (np > e->list.len) np = e->list.len;
@@ -573,6 +574,10 @@ static int gen_struct_lit(Gen *g, Expr *e) {
                            emit_load_local(g, vs[i], 0), 8);
         return emit_load_local(g, ps, 0);
     }
+}
+
+static int gen_struct_lit(Gen *g, Expr *e) {
+    Type *t = e->type;
     int nf = t->fields.len;
     Expr **es = NEWN(Expr *, nf > 0 ? nf : 1);
     Type **wt = NEWN(Type *, nf > 0 ? nf : 1);
@@ -980,6 +985,7 @@ static int gen_match(Gen *g, Expr *e, int as_expr) {
 /* ---- calls ---- */
 
 static int gen_call(Gen *g, Expr *e) {
+    if (e->builtin == -1) return gen_enum_lit(g, e);
     if (e->builtin > 0) return gen_builtin(g, e);
     FnInst *target = (FnInst *)e->target;
     Expr *callee = (e->kind == E_CALL) ? e->a : NULL;
@@ -1145,8 +1151,6 @@ static int gen_builtin(Gen *g, Expr *e) {
             if (e->builtin == BI_ASSERT_EQ) emit_br(g, cmp, bok, bbad);
             else emit_br(g, cmp, bbad, bok);
             g->blk = bbad;
-            ae->type = NULL; be->type = NULL;
-            ae->type = t;
             int sa = gen_to_str(g, ae);
             int sb = gen_to_str(g, be);
             SrcFile *sf = src_get(e->span.file);
@@ -1260,6 +1264,13 @@ static int gen_const_sym(Gen *g, Sym *s, Type *t) {
 
 static int gen_expr(Gen *g, Expr *e) {
     if (!e) return emit_const(g, 0);
+    if (!e->type) {
+        /* Every expression is typed by sema; reaching here means an earlier
+           stage dropped an annotation. Fail loudly rather than crash. */
+        fatal("internal: untyped expression at %s:%d:%d (compiler bug)",
+              src_get(e->span.file) ? src_get(e->span.file)->display : "?",
+              e->span.line, e->span.col);
+    }
     switch (e->kind) {
         case E_INT: case E_CHAR: case E_BOOL: return emit_const(g, e->ival);
         case E_FLOAT: return emit_constf(g, e->fval);
@@ -1323,6 +1334,7 @@ static int gen_expr(Gen *g, Expr *e) {
         case E_STRUCT: return gen_struct_lit(g, e);
         case E_LAMBDA: return gen_lambda(g, e);
         case E_FIELD: {
+            if (e->builtin == -1) return gen_enum_lit(g, e);
             if (e->a->kind == E_IDENT && e->a->sym &&
                 ((Sym *)e->a->sym)->kind == SYM_MOD) {
                 if (e->target) {
@@ -1793,7 +1805,15 @@ static void gen_fn(FnInst *fi) {
     }
     gen_block(&g, fi->decl->body);
     if (!blk_terminated(fi, g.blk)) {
-        if (fi->ret && fi->ret->kind != TY_VOID) {
+        if (fi->ret && fi->ret->kind == TY_RES) {
+            /* falling off the end of a `!T` function yields ok(default) */
+            int z = emit_const(&g, 0);
+            int p = emit_alloc(&g, RES_SIZE, OKIND_SCAN, 0, 0);
+            emit_store_mem(&g, p, RES_TAG, z, 8);
+            emit_store_mem(&g, p, RES_VAL, emit_const(&g, 0), 8);
+            IrIns *i = g_ins(&g, IR_RETV);
+            i->a = p;
+        } else if (fi->ret && fi->ret->kind != TY_VOID) {
             int z = emit_const(&g, 0);
             IrIns *i = ir_emit(fi, g.blk, IR_RETV);
             i->a = z;
@@ -1864,8 +1884,9 @@ FnInst *build_test_main(Unit *u) {
         int s = gen_str_lit(&g, nm, (int)strlen(nm));
         int a1[1] = { s };
         emit_call_n(&g, "test_begin", a1, 1);
-        emit_call(&g, t, NULL, 0, 0);
-        emit_call_n(&g, "test_pass", NULL, 0);
+        int r = emit_call(&g, t, NULL, 0, 0);
+        int a2[1] = { r };
+        emit_call_n(&g, "test_finish", a2, 1);
     }
     int r = emit_call_n(&g, "test_report", NULL, 0);
     IrIns *ret = g_ins(&g, IR_RETV);

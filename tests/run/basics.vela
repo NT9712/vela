@@ -1,0 +1,43 @@
+// EXPECT:
+// 3 -1 12 3 1
+// 7.5 -0.5 1.75 0.25
+// true false true false
+// hi there
+// [1, 2, 3] 3 2
+// [a, b] 2 true
+// Point{x: 1.0, y: 2.0}
+// Color.Green Shape.Rect(2.0, 3.0)
+// nil 5 7
+// ok(9) error: boom
+// 55 120
+fn main() {
+    println("{1 + 2} {1 - 2} {3 * 4} {7 / 2} {7 % 2}")
+    println("{3.5 + 4.0} {3.5 - 4.0} {3.5 / 2.0} {0.5 * 0.5}")
+    println("{1 < 2} {1 > 2} {1 <= 1} {not true}")
+    println("hi" + " " + "there")
+    let xs = [1, 2, 3]
+    println("{xs} {len(xs)} {xs[1]}")
+    let m = { "a": 1, "b": 2 }
+    let ks = m.keys()
+    ks.sort_by(|a, b| a < b)
+    println("{ks} {len(m)} {m.has("a")}")
+    println("{Point{ x: 1.0, y: 2.0 }}")
+    println("{Color.Green} {Shape.Rect(2.0, 3.0)}")
+    let a: ?Int = nil
+    let b: ?Int = 5
+    println("{a} {b ?? 0} {(a ?? 7)}")
+    println("{ok(9)} {err("boom")}")
+    println("{sum(10)} {fact(5)}")
+}
+struct Point { x: Float, y: Float }
+enum Color { Red, Green, Blue }
+enum Shape { Circle(Float), Rect(Float, Float) }
+fn sum(n: Int) -> Int {
+    let mut t = 0
+    for i in 1..=n { t += i }
+    return t
+}
+fn fact(n: Int) -> Int {
+    if n <= 1 { return 1 }
+    return n * fact(n - 1)
+}
