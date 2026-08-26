@@ -1,6 +1,7 @@
 // std/os — process environment, arguments and exit.
 
 use core
+use core/sys
 
 fn cstr_len(p: Int) -> Int {
     let mut l = 0
@@ -69,7 +70,7 @@ pub fn exit(code: Int) {
 /// The current working directory.
 pub fn cwd() -> Str {
     let p = core.str_alloc(4096)
-    let r = @syscall(79, p + 16, 4096)
+    let r = @syscall(sys.SYS_GETCWD, p + 16, 4096)
     if r <= 0 {
         return "."
     }
@@ -82,7 +83,7 @@ pub fn chdir(path: Str) -> !Void {
     let p = core.str_alloc(len(path) + 1)
     core.mcopy(p + 16, @addr(path) + 16, len(path))
     @store8(p + 16 + len(path), 0)
-    if @syscall(80, p + 16) != 0 {
+    if @syscall(sys.SYS_CHDIR, p + 16) != 0 {
         return err("cannot chdir to '{path}'")
     }
     return ok(void)
@@ -90,7 +91,7 @@ pub fn chdir(path: Str) -> !Void {
 
 /// The process identifier.
 pub fn pid() -> Int {
-    return @syscall(39)
+    return @syscall(sys.SYS_GETPID)
 }
 
 /// The absolute path of the running executable.
@@ -100,7 +101,7 @@ pub fn exe_path() -> Str {
     let c = core.str_alloc(len(link) + 1)
     core.mcopy(c + 16, @addr(link) + 16, len(link))
     @store8(c + 16 + len(link), 0)
-    let n = @syscall(89, c + 16, p + 16, 4096)
+    let n = sys.readlink(c + 16, p + 16, 4096)
     if n <= 0 {
         return args()[0]
     }
@@ -111,7 +112,7 @@ pub fn exe_path() -> Str {
 /// True when `fd` is a terminal. Used to decide whether to colour output.
 pub fn is_tty(fd: Int) -> Bool {
     let buf = core.alloc(80, 0)
-    return @syscall(16, fd, 0x5401, buf + 16) == 0
+    return @syscall(sys.SYS_IOCTL, fd, 0x5401, buf + 16) == 0
 }
 
 /// True when output should be coloured: a terminal, and `NO_COLOR` is unset.
@@ -127,5 +128,5 @@ pub fn sleep_ms(ms: Int) {
     let ts = core.alloc(32, 0)
     @store64(ts + 16, ms / 1000)
     @store64(ts + 24, (ms % 1000) * 1000000)
-    @syscall(35, ts + 16, 0)
+    @syscall(sys.SYS_NANOSLEEP, ts + 16, 0)
 }

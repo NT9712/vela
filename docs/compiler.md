@@ -54,7 +54,9 @@ Source layout:
 | `bootstrap/src/irgen.c`  | ~1900 | typed AST → Vela IR |
 | `bootstrap/src/opt.c`    | ~430 | verifier, constant folding, DCE, reachability, IR dump |
 | `bootstrap/src/rodata.c` | ~300 | string literals, static closures, type descriptors |
-| `bootstrap/src/x64.c`    | ~1000 | instruction selection, register allocation, encoding, ELF |
+| `bootstrap/src/x64.c`    | ~1000 | x86-64 instruction selection, register allocation, encoding |
+| `bootstrap/src/arm64.c`  | ~900 | the same for AArch64, plus target dispatch |
+| `bootstrap/src/elf.c`    | ~90 | the ELF64 writer, shared by both backends |
 | `bootstrap/src/main.c`   | ~400 | driver, module resolution, CLI |
 
 ---
@@ -190,6 +192,43 @@ ordering problem: `core` needs syscall numbers before global initialisers have
 run.
 
 ## 8. Code generation
+
+Vela has two backends. They share the IR, the register-allocation strategy and
+the ELF writer, and differ only in instruction selection and encoding.
+
+| | x86-64 | AArch64 |
+|---|---|---|
+| virtual registers | `rbx`, `r12`-`r15` (5) | `x19`-`x26` (8) |
+| scratch | `rax`, `rcx`, `rdx`, … | `x9`-`x12` |
+| arguments | `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` | `x0`-`x7` |
+| frame | `rbp`, variable-length encoding | `x29`/`x30`, fixed 4-byte instructions |
+| syscall | number in `rax`, `syscall` | number in `x8`, `svc #0` |
+| float | `xmm0`/`xmm1` scratch, values in frame slots | `d0`/`d1` scratch, values in frame slots |
+
+The AArch64 encoder is in some ways simpler — every instruction is four bytes —
+and in some ways fussier: immediates are narrow, so constants are built with
+`movz`/`movk` sequences and out-of-range frame offsets are materialised into a
+scratch register. Every encoding it emits was checked against GNU `as` output
+during development, and the test suite cross-compiles the whole golden corpus
+and runs it under `qemu-aarch64`, comparing the output byte for byte with the
+x86-64 run.
+
+Selecting a target is `--target x86_64` or `--target arm64`; the default is the
+host. Cross-compiling requires nothing else installed, because the compiler
+writes the machine code and the ELF itself.
+
+### Per-target system calls
+
+Linux numbers its system calls differently on each architecture, and AArch64
+dropped several entirely — there is no `open`, only `openat`; no `fork`, only
+`clone`. The runtime therefore imports `core/sys`, which the compiler resolves
+to `lib/core/sys_x86_64.vela` or `lib/core/sys_arm64.vela`. That module exports
+uniform wrappers (`sys.open`, `sys.stat`, `sys.pipe`, `sys.fork`, …) plus the
+few structure offsets that differ, such as `st_mode` sitting at byte 24 on
+x86-64 and byte 16 on AArch64. Nothing above that module knows which machine it
+is building for.
+
+## 8b. x86-64 specifics
 
 **Registers.** Virtual registers are allocated only to callee-saved registers
 (`rbx`, `r12`–`r15`); caller-saved registers are scratch inside a single

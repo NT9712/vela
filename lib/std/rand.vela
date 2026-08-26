@@ -1,6 +1,7 @@
 // std/rand — deterministic pseudo-random numbers (xoshiro256**).
 
 use core
+use core/sys
 
 const RS: Int = 400 // runtime scratch offset for the generator state
 
@@ -40,7 +41,7 @@ pub fn seed(s: Int) {
 /// Seed from the clock.
 pub fn seed_from_clock() {
     let ts = core.alloc(32, 0)
-    @syscall(228, 0, ts + 16)
+    @syscall(sys.SYS_CLOCK_GETTIME, 0, ts + 16)
     seed(@load64(ts + 16) * 1000000000 + @load64(ts + 24))
 }
 

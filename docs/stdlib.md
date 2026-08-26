@@ -247,6 +247,7 @@ The runtime. Import it only when you need the collector's statistics or the
 string builder.
 
 ```vela
+core.arch() -> Str              // "x86_64" or "arm64"
 core.gc_collections() -> Int    core.gc_live_bytes() -> Int
 core.gc_heap_bytes()  -> Int    core.gc_collect()
 

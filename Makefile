@@ -19,9 +19,10 @@ LIBS    := $(wildcard lib/core/*.vela lib/std/*.vela)
 TOOLS   := $(wildcard tools/*.vela)
 
 VERSION ?= 1.0.0
-DISTNAME := vela-$(VERSION)-linux-x86_64
+ARCH    ?= x86_64
+DISTNAME := vela-$(VERSION)-linux-$(ARCH)
 
-.PHONY: all test bench install uninstall clean fmt check dist site site-deploy
+.PHONY: all test bench install uninstall clean fmt check dist site site-deploy cross-test
 
 all: $(VELAC) bin/vela bin/vela-lsp
 
@@ -69,6 +70,9 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/vela-lsp
 	rm -rf $(DESTDIR)$(PREFIX)/lib/vela
 
+cross-test: all
+	./tests/run.sh cross
+
 site: all
 	VELA_ROOT=$(CURDIR) $(VELAC) -q -o site/build site/build.vela
 	./site/build .
@@ -78,10 +82,20 @@ site: all
 site-deploy: site
 	cd site && vercel deploy --prod --yes
 
+# `make dist` packages for the host; `make dist ARCH=arm64` cross-compiles the
+# Vela-written tools with velac and cross-builds velac itself with $(CROSS_CC).
+CROSS_CC ?= aarch64-linux-gnu-gcc
+
 dist: all
 	rm -rf dist/$(DISTNAME)
 	mkdir -p dist/$(DISTNAME)/bin dist/$(DISTNAME)/lib
+ifeq ($(ARCH),arm64)
+	$(CROSS_CC) $(CFLAGS) -static -o dist/$(DISTNAME)/bin/velac $(SRC)
+	VELA_ROOT=$(CURDIR) $(VELAC) -q --target arm64 -o dist/$(DISTNAME)/bin/vela     tools/cli.vela
+	VELA_ROOT=$(CURDIR) $(VELAC) -q --target arm64 -o dist/$(DISTNAME)/bin/vela-lsp tools/lsp.vela
+else
 	cp bin/velac bin/vela bin/vela-lsp        dist/$(DISTNAME)/bin/
+endif
 	cp -r lib/core lib/std                    dist/$(DISTNAME)/lib/
 	cp -r editor docs examples spec           dist/$(DISTNAME)/
 	cp README.md LICENSE                      dist/$(DISTNAME)/

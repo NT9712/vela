@@ -1,14 +1,7 @@
 // std/process — running child processes.
 
 use core
-
-const SYS_CLOSE: Int = 3
-const SYS_PIPE: Int = 22
-const SYS_DUP2: Int = 33
-const SYS_FORK: Int = 57
-const SYS_EXECVE: Int = 59
-const SYS_WAIT4: Int = 61
-const SYS_KILL: Int = 62
+use core/sys
 
 fn cstr(s: Str) -> Int {
     let p = core.str_alloc(len(s) + 1)
@@ -41,10 +34,10 @@ pub fn run(args: [Str]) -> !Output {
     }
     let outp = core.alloc(32, 0) + 16
     let errp = core.alloc(32, 0) + 16
-    if @syscall(SYS_PIPE, outp) != 0 {
+    if sys.pipe(outp) != 0 {
         return err("cannot create pipe")
     }
-    if @syscall(SYS_PIPE, errp) != 0 {
+    if sys.pipe(errp) != 0 {
         return err("cannot create pipe")
     }
     let out_r = @load32(outp)
@@ -52,28 +45,28 @@ pub fn run(args: [Str]) -> !Output {
     let err_r = @load32(errp)
     let err_w = @load32(errp + 4)
 
-    let pid = @syscall(SYS_FORK)
+    let pid = sys.fork()
     if pid < 0 {
         return err("fork failed")
     }
     if pid == 0 {
-        @syscall(SYS_CLOSE, out_r)
-        @syscall(SYS_CLOSE, err_r)
-        @syscall(SYS_DUP2, out_w, 1)
-        @syscall(SYS_DUP2, err_w, 2)
-        @syscall(SYS_CLOSE, out_w)
-        @syscall(SYS_CLOSE, err_w)
-        @syscall(SYS_EXECVE, cstr(args[0]), argv_block(args), @envp())
+        sys.close(out_r)
+        sys.close(err_r)
+        sys.dup2(out_w, 1)
+        sys.dup2(err_w, 2)
+        sys.close(out_w)
+        sys.close(err_w)
+        @syscall(sys.SYS_EXECVE, cstr(args[0]), argv_block(args), @envp())
         core.exit(127)
     }
-    @syscall(SYS_CLOSE, out_w)
-    @syscall(SYS_CLOSE, err_w)
+    sys.close(out_w)
+    sys.close(err_w)
     let so = drain(out_r)
     let se = drain(err_r)
-    @syscall(SYS_CLOSE, out_r)
-    @syscall(SYS_CLOSE, err_r)
+    sys.close(out_r)
+    sys.close(err_r)
     let stat = core.alloc(32, 0) + 16
-    @syscall(SYS_WAIT4, pid, stat, 0, 0)
+    @syscall(sys.SYS_WAIT4, pid, stat, 0, 0)
     let raw = @load32(stat)
     let mut code = (raw >> 8) & 255
     if raw & 127 != 0 {
@@ -87,7 +80,7 @@ fn drain(fd: Int) -> Str {
     let bufsz = 65536
     let p = core.str_alloc(bufsz)
     while true {
-        let got = @syscall(0, fd, p + 16, bufsz)
+        let got = sys.read(fd, p + 16, bufsz)
         if got <= 0 {
             return out
         }
@@ -101,16 +94,16 @@ pub fn spawn(args: [Str]) -> !Int {
     if len(args) == 0 {
         return err("process.spawn needs at least a program name")
     }
-    let pid = @syscall(SYS_FORK)
+    let pid = sys.fork()
     if pid < 0 {
         return err("fork failed")
     }
     if pid == 0 {
-        @syscall(SYS_EXECVE, cstr(args[0]), argv_block(args), @envp())
+        @syscall(sys.SYS_EXECVE, cstr(args[0]), argv_block(args), @envp())
         core.exit(127)
     }
     let stat = core.alloc(32, 0) + 16
-    @syscall(SYS_WAIT4, pid, stat, 0, 0)
+    @syscall(sys.SYS_WAIT4, pid, stat, 0, 0)
     let raw = @load32(stat)
     let mut code = (raw >> 8) & 255
     if raw & 127 != 0 {
@@ -130,11 +123,11 @@ pub fn which(name: Str) -> ?Str {
             continue
         }
         let cand = dir + "/" + name
-        let buf = core.alloc(160, 0)
+        let buf = core.alloc(sys.STAT_SIZE, 0)
         let c = core.str_alloc(len(cand) + 1)
         core.mcopy(c + 16, @addr(cand) + 16, len(cand))
         @store8(c + 16 + len(cand), 0)
-        if @syscall(4, c + 16, buf) == 0 {
+        if sys.stat(c + 16, buf) == 0 {
             return cand
         }
     }
@@ -164,7 +157,7 @@ fn env_path() -> Str {
 
 /// Send a signal to a process.
 pub fn kill(pid: Int, sig: Int) -> !Void {
-    if @syscall(SYS_KILL, pid, sig) != 0 {
+    if @syscall(sys.SYS_KILL, pid, sig) != 0 {
         return err("cannot signal process {pid}")
     }
     return ok(void)

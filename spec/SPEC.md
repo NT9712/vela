@@ -671,7 +671,12 @@ main.vela + imports + stdlib
 
 There is no runtime linker, no libc, and no interpreter. `_start` sets up the
 heap, records the stack base for the GC, marshals `argc`/`argv`/`envp`, calls
-`main`, and issues `exit_group`. All I/O is direct `syscall`.
+`main`, and issues `exit_group`. All I/O is a direct system call.
+
+Two targets are supported, `x86_64` and `arm64`, both Linux ELF64. The compiler
+encodes instructions and writes the executable itself, so cross-compiling needs
+nothing installed beyond the compiler. `core.arch()` reports the architecture a
+program was built for.
 
 A `panic` prints `panic: <message>` plus a source location to fd 2 and exits
 with status 101.

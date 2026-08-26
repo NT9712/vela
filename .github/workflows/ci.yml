@@ -57,6 +57,28 @@ jobs:
           vela run -- done 1
           vela run -- list
 
+  cross-arm64:
+    name: cross-compile and run on arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install qemu-user and the aarch64 binutils
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user binutils-aarch64-linux-gnu
+      - name: build the compiler
+        run: make bin/velac
+      - name: cross-compile and execute under qemu
+        run: ./tests/run.sh cross
+      - name: the arm64 toolchain builds and runs a project
+        run: |
+          set -e
+          export VELA_ROOT=$PWD
+          ./bin/velac -q --target arm64 -o /tmp/vela-arm64 tools/cli.vela
+          qemu-aarch64 /tmp/vela-arm64 version
+          ./bin/velac -q --target arm64 -o /tmp/calc-arm64 examples/calculator.vela
+          test "$(qemu-aarch64 /tmp/calc-arm64 '2^16 - 1')" = "65535.0"
+
   sanitizers:
     name: compiler under asan/ubsan
     runs-on: ubuntu-latest

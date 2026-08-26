@@ -218,6 +218,51 @@ fmt_tests() {
 
 # ------------------------------------------------------------------ fuzzing
 
+cross_tests() {
+  echo "cross compilation (arm64)"
+  local QEMU
+  QEMU="$(command -v qemu-aarch64 || command -v qemu-aarch64-static || true)"
+  local n=0
+  for f in "$ROOT"/tests/run/*.vela; do
+    local name; name="$(basename "$f" .vela)"
+    "$VELAC" -q --no-color --target arm64 -o "$TMP/a64-$name" "$f" 2>"$TMP/a64.err" || {
+      bad "arm64 compile $name" "$(head -6 "$TMP/a64.err")"; return; }
+    # the ELF header must say AArch64, whether or not we can execute it
+    python3 - "$TMP/a64-$name" <<'PY' || { echo bad; }
+import sys, struct
+d = open(sys.argv[1], 'rb').read()
+assert d[:4] == b'\x7fELF' and d[4] == 2 and struct.unpack_from('<H', d, 18)[0] == 183, "not aarch64"
+PY
+    n=$((n+1))
+  done
+  ok "$n programs cross-compiled to AArch64 ELF"
+
+  if [ -z "$QEMU" ]; then
+    skip "arm64 execution" "qemu-aarch64 not installed"
+    return
+  fi
+  local bad_any=0
+  for f in "$ROOT"/tests/run/*.vela; do
+    local name; name="$(basename "$f" .vela)"
+    local expected actual
+    expected="$(awk '/^\/\/ EXPECT:/{flag=1;next} /^\/\//{if(flag){sub(/^\/\/ ?/,"");print;next}} {if(flag)exit}' "$f")"
+    actual="$(timeout 120 "$QEMU" "$TMP/a64-$name" 2>&1)"
+    if [ "$actual" != "$expected" ]; then
+      bad "arm64 run $name" "$(diff <(echo "$expected") <(echo "$actual") | head -8)"; bad_any=1
+    fi
+  done
+  [ $bad_any -eq 0 ] && ok "all golden programs produce identical output on arm64"
+
+  "$VELAC" -q --no-color --target arm64 --test -o "$TMP/a64-lib" "$ROOT/tests/lib/stdlib.vela" 2>/dev/null && {
+    local out; out="$(timeout 300 "$QEMU" "$TMP/a64-lib" 2>&1 | tail -1)"
+    case "$out" in *"0 failed"*) ok "arm64 stdlib: $out";; *) bad "arm64 stdlib" "$out";; esac
+  }
+  "$VELAC" -q --no-color --target arm64 -o "$TMP/a64-vela" "$ROOT/tools/cli.vela" 2>/dev/null && {
+    local v; v="$(timeout 120 "$QEMU" "$TMP/a64-vela" version 2>&1)"
+    case "$v" in *"arm64"*) ok "arm64 toolchain runs: $v";; *) bad "arm64 toolchain" "$v";; esac
+  }
+}
+
 site_tests() {
   echo "documentation site"
   "$VELAC" -q --no-color -o "$TMP/sitebuild" "$ROOT/site/build.vela" 2>"$TMP/sb.err" \
@@ -374,6 +419,7 @@ case "$what" in
   regress) regress_tests ;;
   dist) dist_tests ;;
   site) site_tests ;;
+  cross) cross_tests ;;
   fail) fail_tests ;;
   unit) unit_tests ;;
   cli)  cli_tests ;;
@@ -381,7 +427,7 @@ case "$what" in
   fmt)  fmt_tests ;;
   selfcheck) selfcheck_tests ;;
   fuzz) fuzz_tests ;;
-  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; site_tests; dist_tests; regress_tests; fuzz_tests ;;
+  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; cross_tests; site_tests; dist_tests; regress_tests; fuzz_tests ;;
 esac
 
 echo

@@ -100,6 +100,9 @@ Module *load_module(const char *modpath, const char *fromfile, Span sp) {
         dirname_of(fromfile ? fromfile : ".", dir, sizeof dir);
         snprintf(path, sizeof path, "%s/%s.vela", dir, modpath);
         normalize(path);
+    } else if (strcmp(modpath, "core/sys") == 0 || strcmp(modpath, "sys") == 0) {
+        /* the system-call layer is chosen by target */
+        snprintf(path, sizeof path, "%s/core/sys_%s.vela", velalib, target_name(g_target));
     } else if (strncmp(modpath, "std/", 4) == 0 || strcmp(modpath, "core") == 0 ||
                strcmp(modpath, "prelude") == 0) {
         if (strcmp(modpath, "core") == 0)
@@ -215,6 +218,7 @@ static void usage(FILE *o) {
 "  --test           compile `test` blocks into a test binary\n"
 "  --emit-ir        print the optimised Vela IR to stdout\n"
 "  --emit-tokens    print the token stream of the entry module\n"
+"  --target <arch>  x86_64 (default on x86-64) or arm64\n"
 "  --root <dir>     location of the Vela installation (lib/, tools/)\n"
 "  --dep <dir>      add a dependency search root (repeatable)\n"
 "  --no-color       disable coloured diagnostics\n"
@@ -268,6 +272,11 @@ static void discover_root(const char *argv0) {
 
 int main(int argc, char **argv) {
     const char *input = NULL;
+#if defined(__aarch64__)
+    g_target = TARGET_ARM64;
+#else
+    g_target = TARGET_X86_64;
+#endif
     if (!isatty(2)) diag_set_color(0);
 
     for (int i = 1; i < argc; i++) {
@@ -278,6 +287,13 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--emit-ir") == 0) opt_emit_ir = 1;
         else if (strcmp(a, "--emit-tokens") == 0) opt_emit_tokens = 1;
         else if (strcmp(a, "--emit-ast") == 0) opt_emit_ast = 1;
+        else if (strcmp(a, "--target") == 0 && i + 1 < argc) {
+            if (!target_from_name(argv[++i], &g_target)) {
+                fprintf(stderr, "velac: unknown target `%s`\n"
+                                "       supported: x86_64, arm64\n", argv[i]);
+                return 2;
+            }
+        }
         else if (strcmp(a, "--root") == 0 && i + 1 < argc) opt_root = argv[++i];
         else if (strcmp(a, "--dep") == 0 && i + 1 < argc)
             vec_push(&g_unit.searchpaths, (void *)argv[++i]);
@@ -287,7 +303,10 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--time") == 0) opt_time = 1;
         else if (strcmp(a, "-q") == 0 || strcmp(a, "--quiet") == 0) opt_quiet = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) { usage(stdout); return 0; }
-        else if (strcmp(a, "--version") == 0) { printf("velac 1.0.0 (bootstrap)\n"); return 0; }
+        else if (strcmp(a, "--version") == 0) {
+            printf("velac 1.0.0 (bootstrap) host %s\n", target_name(g_target));
+            return 0;
+        }
         else if (a[0] == '-' && a[1]) {
             fprintf(stderr, "velac: unknown option `%s`\n", a);
             fprintf(stderr, "try `velac --help`\n");

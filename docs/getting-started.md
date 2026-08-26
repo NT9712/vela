@@ -5,8 +5,8 @@
 The quickest way in — no compiler needed:
 
 ```console
-$ curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.0.0-linux-x86_64.tar.gz | tar xz
-$ cd vela-1.0.0-linux-x86_64
+$ curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-linux-x86_64.tar.gz | tar xz
+$ cd vela-1.1.0-linux-x86_64
 $ ./install.sh ~/.local
 $ export PATH="$HOME/.local/bin:$PATH"
 $ vela version
@@ -20,7 +20,7 @@ To build from source instead, read on.
 
 ## Requirements
 
-* Linux on x86-64
+* Linux on x86-64 or ARM64
 * a C compiler (`cc` or `gcc`) and `make` — needed once, to build the bootstrap
   compiler
 
@@ -255,6 +255,20 @@ vela 1.0.0 repl - type an expression, or :help
 ```
 
 Definitions persist for the session. `:clear` forgets them, `:list` shows them.
+
+## Cross-compile
+
+```console
+$ vela build --target arm64
+built /home/you/hello/build/hello-arm64
+
+$ file build/hello-arm64
+build/hello-arm64: ELF 64-bit LSB executable, ARM aarch64, statically linked
+```
+
+Nothing needs installing for this. `velac` encodes the instructions and writes
+the ELF itself, so there is no cross assembler and no cross linker in the way.
+The same works in the other direction from an ARM64 machine.
 
 ## Where to go next
 

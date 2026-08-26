@@ -1,6 +1,7 @@
 // std/io — console and stream input/output.
 
 use core
+use core/sys
 
 pub const STDIN: Int = 0
 pub const STDOUT: Int = 1
@@ -36,7 +37,7 @@ pub fn write(fd: Int, s: Str) -> Int {
 /// Read up to `n` bytes from `fd`. Returns an empty string at end of file.
 pub fn read(fd: Int, n: Int) -> Str {
     let p = core.str_alloc(n)
-    let got = @syscall(core.SYS_READ, fd, p + 16, n)
+    let got = sys.read(fd, p + 16, n)
     if got <= 0 {
         return ""
     }

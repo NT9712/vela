@@ -125,8 +125,9 @@ is what makes conservative roots safe and `@addr` meaningful.
    tells the runtime how many entries there are).
 2. **The machine stack** — from the collector's own stack pointer up to the value
    of `rsp` recorded by `_start`, scanned word by word.
-3. **Callee-saved registers** — `@save_regs()` pushes `rbx`, `r12`–`r15` onto the
-   stack immediately before the scan, so they are covered by (2).
+3. **Callee-saved registers** — `@save_regs()` pushes them onto the stack
+   immediately before the scan, so they are covered by (2): `rbx` and `r12`–`r15`
+   on x86-64, `x19`–`x28` on AArch64.
 
 Stack scanning is **conservative**: any word that looks like the address of a
 live object is treated as a root. This can retain a little garbage; it can never

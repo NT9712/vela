@@ -1,0 +1,96 @@
+// core/sys — the Linux system-call layer for x86-64.
+//
+// The compiler resolves `use core/sys` to the file for the target it is
+// building, so everything above this line is architecture independent.
+
+pub const ARCH: Str = "x86_64"
+
+pub const SYS_READ: Int = 0
+pub const SYS_WRITE: Int = 1
+pub const SYS_CLOSE: Int = 3
+pub const SYS_LSEEK: Int = 8
+pub const SYS_MMAP: Int = 9
+pub const SYS_MUNMAP: Int = 11
+pub const SYS_IOCTL: Int = 16
+pub const SYS_GETPID: Int = 39
+pub const SYS_SOCKET: Int = 41
+pub const SYS_CONNECT: Int = 42
+pub const SYS_ACCEPT: Int = 43
+pub const SYS_SHUTDOWN: Int = 48
+pub const SYS_BIND: Int = 49
+pub const SYS_LISTEN: Int = 50
+pub const SYS_SETSOCKOPT: Int = 54
+pub const SYS_EXECVE: Int = 59
+pub const SYS_EXIT_GROUP: Int = 231
+pub const SYS_WAIT4: Int = 61
+pub const SYS_KILL: Int = 62
+pub const SYS_GETCWD: Int = 79
+pub const SYS_CHDIR: Int = 80
+pub const SYS_NANOSLEEP: Int = 35
+pub const SYS_CLOCK_GETTIME: Int = 228
+pub const SYS_GETDENTS64: Int = 217
+
+/// Byte offsets into `struct stat`, which differs between architectures.
+pub const STAT_SIZE: Int = 160
+pub const STAT_MODE_OFF: Int = 24
+pub const STAT_SIZE_OFF: Int = 48
+
+pub fn read(fd: Int, buf: Int, n: Int) -> Int {
+    return @syscall(SYS_READ, fd, buf, n)
+}
+
+pub fn write(fd: Int, buf: Int, n: Int) -> Int {
+    return @syscall(SYS_WRITE, fd, buf, n)
+}
+
+pub fn close(fd: Int) -> Int {
+    return @syscall(SYS_CLOSE, fd)
+}
+
+pub fn mmap_anon(n: Int) -> Int {
+    return @syscall(SYS_MMAP, 0, n, 3, 0x4022, -1, 0)
+}
+
+pub fn exit_group(code: Int) {
+    @syscall(SYS_EXIT_GROUP, code)
+}
+
+pub fn open(path: Int, flags: Int, mode: Int) -> Int {
+    return @syscall(2, path, flags, mode)
+}
+
+pub fn stat(path: Int, buf: Int) -> Int {
+    return @syscall(4, path, buf)
+}
+
+pub fn unlink(path: Int) -> Int {
+    return @syscall(87, path)
+}
+
+pub fn mkdir(path: Int, mode: Int) -> Int {
+    return @syscall(83, path, mode)
+}
+
+pub fn rmdir(path: Int) -> Int {
+    return @syscall(84, path)
+}
+
+pub fn rename(from: Int, to: Int) -> Int {
+    return @syscall(82, from, to)
+}
+
+pub fn readlink(path: Int, buf: Int, n: Int) -> Int {
+    return @syscall(89, path, buf, n)
+}
+
+pub fn pipe(fds: Int) -> Int {
+    return @syscall(22, fds)
+}
+
+pub fn dup2(old: Int, new: Int) -> Int {
+    return @syscall(33, old, new)
+}
+
+pub fn fork() -> Int {
+    return @syscall(57)
+}

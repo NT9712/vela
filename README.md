@@ -36,9 +36,9 @@ Vela's bet is that a language can be both if it stays small:
 * **Simple** — the whole language is one document ([the specification](spec/SPEC.md)).
   Four primitive types, one reference model, no traits, no macros, no lifetimes,
   no implicit conversions.
-* **Fast** — `velac` emits machine code directly at ~33,000 lines per second.
-  A hello-world binary is 18 KB, starts in under a millisecond, and makes
-  exactly three syscalls before `main`.
+* **Fast** — `velac` emits machine code directly at ~33,000 lines per second,
+  for x86-64 or ARM64. A hello-world binary is 18 KB, starts in under a
+  millisecond, and makes exactly three syscalls before `main`.
 * **Expressive** — closures, generics, sum types, pattern matching, string
   interpolation, and errors as values.
 * **Cohesive** — the garbage collector, the string type, the collections, the
@@ -50,8 +50,8 @@ Vela's bet is that a language can be both if it stays small:
 ## Install
 
 ```console
-$ curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.0.0-linux-x86_64.tar.gz | tar xz
-$ cd vela-1.0.0-linux-x86_64 && ./install.sh ~/.local
+$ curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-linux-x86_64.tar.gz | tar xz
+$ cd vela-1.1.0-linux-x86_64 && ./install.sh ~/.local
 $ export PATH="$HOME/.local/bin:$PATH"
 $ vela version
 vela 1.0.0
@@ -208,7 +208,28 @@ velac --check main.vela      type-check
 velac --emit-ir main.vela    print the optimised IR
 velac --emit-tokens f.vela   print the token stream
 velac --time main.vela       per-phase timings
+velac --target arm64 ...     cross-compile; there is no cross linker to install
 ```
+
+## Targets
+
+| target | status |
+|--------|--------|
+| `x86_64` Linux | fully supported, the default on x86-64 hosts |
+| `arm64` Linux (AArch64) | fully supported, the default on ARM64 hosts |
+
+Cross-compiling needs nothing beyond the compiler, because `velac` encodes the
+instructions and writes the ELF itself:
+
+```console
+$ vela build --target arm64        # from an x86-64 machine
+$ file build/hello-arm64
+build/hello-arm64: ELF 64-bit LSB executable, ARM aarch64, statically linked
+```
+
+The test suite cross-compiles every golden program and, when `qemu-aarch64` is
+installed, runs them and compares the output byte for byte against the x86-64
+run.
 
 ---
 
@@ -247,7 +268,7 @@ the formatter, the package manager and the documentation all agree.
 
 Known limits, stated plainly:
 
-* **x86-64 Linux only.** The backend emits ELF64 for one architecture.
+* **Linux only.** Two architectures, x86-64 and ARM64, both ELF64.
 * **Single-threaded.** `std/process` gives parallelism through child processes.
 * **The compiler is not yet self-hosted.** The lexer, formatter, documentation
   generator and the `vela` driver are written in Vela; the type checker, IR and
@@ -264,7 +285,7 @@ MIT. See [LICENSE](LICENSE).
 
 | part | language | lines |
 |------|----------|-------|
-| bootstrap compiler | C | 10,000 |
+| bootstrap compiler, both backends | C | 12,000 |
 | runtime: allocator, collector, strings, collections, formatting | **Vela** | 2,900 |
 | standard library: io, fs, os, path, math, rand, time, sort, json, net, process, fmt, testing | **Vela** | 2,050 |
 | toolchain: lexer, formatter, doc generator, CLI, language server | **Vela** | 2,600 |
@@ -272,6 +293,7 @@ MIT. See [LICENSE](LICENSE).
 | tests | Vela + shell | 950 |
 | documentation and specification | Markdown | 3,100 |
 
-52 test groups covering golden output, diagnostics, unit tests, formatter
-idempotency, the whole toolchain end to end, the language server, a regression
-corpus, and randomised fuzzing.
+63 test groups covering golden output, diagnostics, unit tests, formatter
+idempotency, the whole toolchain end to end, the language server, ARM64
+cross-compilation and execution, the release packaging, a regression corpus, and
+randomised fuzzing.

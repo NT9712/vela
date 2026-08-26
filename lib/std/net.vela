@@ -1,15 +1,7 @@
 // std/net — TCP sockets over raw syscalls.
 
 use core
-
-const SYS_CLOSE: Int = 3
-const SYS_SOCKET: Int = 41
-const SYS_CONNECT: Int = 42
-const SYS_ACCEPT: Int = 43
-const SYS_SHUTDOWN: Int = 48
-const SYS_BIND: Int = 49
-const SYS_LISTEN: Int = 50
-const SYS_SETSOCKOPT: Int = 54
+use core/sys
 
 const AF_INET: Int = 2
 const SOCK_STREAM: Int = 1
@@ -58,12 +50,12 @@ pub fn parse_ip(s: Str) -> ?Int {
 /// Connect to `host:port`. `host` must be a dotted-quad address.
 pub fn connect(host: Str, port: Int) -> !Conn {
     let ip = parse_ip(host) ?? return err("net.connect needs a dotted-quad address, got '{host}'")
-    let fd = @syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, 0)
+    let fd = @syscall(sys.SYS_SOCKET, AF_INET, SOCK_STREAM, 0)
     if fd < 0 {
         return err("cannot create socket")
     }
-    if @syscall(SYS_CONNECT, fd, sockaddr(ip, port), 16) < 0 {
-        @syscall(SYS_CLOSE, fd)
+    if @syscall(sys.SYS_CONNECT, fd, sockaddr(ip, port), 16) < 0 {
+        sys.close(fd)
         return err("cannot connect to {host}:{port}")
     }
     return ok(Conn{fd: fd })
@@ -71,19 +63,19 @@ pub fn connect(host: Str, port: Int) -> !Conn {
 
 /// Listen on `port` for incoming connections.
 pub fn listen(port: Int) -> !Listener {
-    let fd = @syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, 0)
+    let fd = @syscall(sys.SYS_SOCKET, AF_INET, SOCK_STREAM, 0)
     if fd < 0 {
         return err("cannot create socket")
     }
     let one = core.alloc(32, 0) + 16
     @store32(one, 1)
-    @syscall(SYS_SETSOCKOPT, fd, SOL_SOCKET, SO_REUSEADDR, one, 4)
-    if @syscall(SYS_BIND, fd, sockaddr(0, port), 16) < 0 {
-        @syscall(SYS_CLOSE, fd)
+    @syscall(sys.SYS_SETSOCKOPT, fd, SOL_SOCKET, SO_REUSEADDR, one, 4)
+    if @syscall(sys.SYS_BIND, fd, sockaddr(0, port), 16) < 0 {
+        sys.close(fd)
         return err("cannot bind port {port}")
     }
-    if @syscall(SYS_LISTEN, fd, 128) < 0 {
-        @syscall(SYS_CLOSE, fd)
+    if @syscall(sys.SYS_LISTEN, fd, 128) < 0 {
+        sys.close(fd)
         return err("cannot listen on port {port}")
     }
     return ok(Listener{ fd: fd, port: port })
@@ -91,7 +83,7 @@ pub fn listen(port: Int) -> !Listener {
 
 /// Accept one connection, blocking until a client arrives.
 pub fn Listener.accept(self) -> !Conn {
-    let fd = @syscall(SYS_ACCEPT, self.fd, 0, 0)
+    let fd = @syscall(sys.SYS_ACCEPT, self.fd, 0, 0)
     if fd < 0 {
         return err("accept failed")
     }
@@ -100,7 +92,7 @@ pub fn Listener.accept(self) -> !Conn {
 
 /// Stop listening.
 pub fn Listener.close(self) {
-    @syscall(SYS_CLOSE, self.fd)
+    sys.close(self.fd)
 }
 
 /// Send a string. Returns the number of bytes written.
@@ -120,7 +112,7 @@ pub fn Conn.write(self, s: Str) -> !Int {
 /// Read up to `n` bytes. An empty string means the peer closed the connection.
 pub fn Conn.read(self, n: Int) -> Str {
     let p = core.str_alloc(n)
-    let got = @syscall(0, self.fd, p + 16, n)
+    let got = sys.read(self.fd, p + 16, n)
     if got <= 0 {
         return ""
     }
@@ -159,6 +151,6 @@ pub fn Conn.read_until(self, marker: Str) -> Str {
 
 /// Close the connection.
 pub fn Conn.close(self) {
-    @syscall(SYS_SHUTDOWN, self.fd, 2)
-    @syscall(SYS_CLOSE, self.fd)
+    @syscall(sys.SYS_SHUTDOWN, self.fd, 2)
+    sys.close(self.fd)
 }

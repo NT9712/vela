@@ -1,5 +1,5 @@
-curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.0.0-linux-x86_64.tar.gz | tar xz
-cd vela-1.0.0-linux-x86_64 && ./install.sh ~/.local
+curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-linux-x86_64.tar.gz | tar xz
+cd vela-1.1.0-linux-x86_64 && ./install.sh ~/.local
 export PATH="$HOME/.local/bin:$PATH"
 
 vela new hello && cd hello && vela run

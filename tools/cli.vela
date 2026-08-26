@@ -3,6 +3,7 @@
 // This program is itself written in Vela and compiled by velac, so the whole
 // toolchain other than the bootstrap compiler runs on the language it serves.
 
+use core
 use std/os
 use std/fs
 use std/io
@@ -38,7 +39,7 @@ fn main() -> Int {
         return 0
     }
     if cmd == "version" or cmd == "--version" or cmd == "-V" {
-        io.println("vela {VERSION}")
+        io.println("vela {VERSION} ({core.arch()})")
         return 0
     }
 
@@ -118,6 +119,8 @@ fn usage() {
     io.println(F.pad_right("  repl", 22) + "evaluate expressions interactively")
     io.println(F.pad_right("  version", 22) + "print the toolchain version")
     io.println("")
+    io.println("targets: x86_64, arm64   (this build runs on " + core.arch() + ")")
+    io.println("")
     io.println("run `vela help <command>` for details.")
 }
 
@@ -125,7 +128,7 @@ fn help_for(c: Str) -> Int {
     if c == "new" {
         io.println("vela new <name>\n\nCreates ./<name> containing vela.toml, src/main.vela and a .gitignore.")
     } else if c == "build" {
-        io.println("vela build [--out PATH] [--emit-ir]\n\nCompiles the module named by `main` in vela.toml.\nThe binary is written to build/<name> unless --out is given.")
+        io.println("vela build [--out PATH] [--target ARCH] [--emit-ir]\n\n" + "Compiles the module named by `main` in vela.toml.\n" + "The binary is written to build/<name> unless --out is given.\n\n" + "Targets: x86_64, arm64. Cross-compiling needs nothing extra —\n" + "velac emits the ELF itself, so there is no cross linker to install.")
     } else if c == "run" {
         io.println("vela run [args...]\n\nBuilds the project and runs it, forwarding args to the program.")
     } else if c == "test" {
@@ -250,6 +253,18 @@ fn velac_path() -> Str {
     return cand
 }
 
+/// The architecture this toolchain was built for, unless `--target` overrides it.
+fn target_of(args: [Str]) -> Str {
+    let mut i = 0
+    while i < len(args) {
+        if args[i] == "--target" and i + 1 < len(args) {
+            return args[i + 1]
+        }
+        i += 1
+    }
+    return core.arch()
+}
+
 fn compile(root: Str, m: Manifest, out: Str, extra: [Str]) -> !Int {
     let vc = velac_path()
     if not fs.exists(vc) {
@@ -315,7 +330,11 @@ fn cmd_build(rest: [Str]) -> !Int {
     let root = find_root()?
     let m = parse_manifest(root)?
     fs.mkdir_all(path.join([root, "build"]))?
+    let tgt = target_of(rest)
     let mut out = path.join([root, "build", m.name])
+    if tgt != core.arch() {
+        out = path.join([root, "build", "{m.name}-{tgt}"])
+    }
     let extra: [Str] = []
     let mut i = 0
     while i < len(rest) {

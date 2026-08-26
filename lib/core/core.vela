@@ -17,21 +17,28 @@
 // See docs/memory.md for the memory model in prose.
 
 // ------------------------------------------------------------------ syscalls
+//
+// The numbers and the shapes of several calls differ between architectures, so
+// everything goes through `core/sys`, which the compiler resolves to the file
+// for the target being built.
 
-pub const SYS_READ: Int = 0
-pub const SYS_WRITE: Int = 1
-pub const SYS_OPEN: Int = 2
-pub const SYS_CLOSE: Int = 3
-pub const SYS_MMAP: Int = 9
-pub const SYS_MUNMAP: Int = 11
-pub const SYS_EXIT_GROUP: Int = 231
+use core/sys
 
 pub fn sys_write(fd: Int, buf: Int, n: Int) -> Int {
-    return @syscall(SYS_WRITE, fd, buf, n)
+    return sys.write(fd, buf, n)
+}
+
+pub fn sys_read(fd: Int, buf: Int, n: Int) -> Int {
+    return sys.read(fd, buf, n)
 }
 
 pub fn exit(code: Int) {
-    @syscall(SYS_EXIT_GROUP, code)
+    sys.exit_group(code)
+}
+
+/// The architecture this program was compiled for.
+pub fn arch() -> Str {
+    return sys.ARCH
 }
 
 // ------------------------------------------------- runtime state area layout
@@ -159,7 +166,7 @@ pub fn mcopy(dst: Int, src: Int, n: Int) {
 
 pub fn rt_init() {
     let want = HEAP_RESERVE + CHUNK_SIZE
-    let p = @syscall(SYS_MMAP, 0, want, 3, 0x4022, -1, 0)
+    let p = sys.mmap_anon(want)
     if p < 0 or p == 0 {
         let m = "vela: cannot reserve heap\n"
         sys_write(2, @addr(m) + 16, len(m))
@@ -172,12 +179,12 @@ pub fn rt_init() {
     rts(RT_THRESHOLD, 4194304)
     rts(RT_SINCE_GC, 0)
 
-    let ms = @syscall(SYS_MMAP, 0, MARKSTACK_BYTES, 3, 0x4022, -1, 0)
+    let ms = sys.mmap_anon(MARKSTACK_BYTES)
     rts(RT_MARKSTACK, ms)
     rts(RT_MARKCAP, MARKSTACK_BYTES / 8)
     rts(RT_MARKTOP, 0)
 
-    let cl = @syscall(SYS_MMAP, 0, 1048576, 3, 0x4022, -1, 0)
+    let cl = sys.mmap_anon(1048576)
     rts(RT_CHUNKLIST, cl)
     rts(RT_CHUNKCAP, 131072)
     rts(RT_NCHUNKS, 0)
@@ -2072,13 +2079,13 @@ pub fn stdin_getc() -> Int {
     }
     let mut b = rtl(RT_IN_BUF)
     if b == 0 {
-        b = @syscall(SYS_MMAP, 0, IN_BUFSZ, 3, 0x4022, -1, 0)
+        b = sys.mmap_anon(IN_BUFSZ)
         if b <= 0 {
             return -1
         }
         rts(RT_IN_BUF, b)
     }
-    let n = @syscall(SYS_READ, 0, b, IN_BUFSZ)
+    let n = sys.read(0, b, IN_BUFSZ)
     if n <= 0 {
         rts(RT_IN_LEN, 0)
         rts(RT_IN_POS, 0)

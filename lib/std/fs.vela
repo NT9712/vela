@@ -1,17 +1,7 @@
 // std/fs — files and directories.
 
 use core
-
-const SYS_OPEN: Int = 2
-const SYS_CLOSE: Int = 3
-const SYS_STAT: Int = 4
-const SYS_FSTAT: Int = 5
-const SYS_LSEEK: Int = 8
-const SYS_RENAME: Int = 82
-const SYS_MKDIR: Int = 83
-const SYS_RMDIR: Int = 84
-const SYS_UNLINK: Int = 87
-const SYS_GETDENTS64: Int = 217
+use core/sys
 
 const O_RDONLY: Int = 0
 const O_WRONLY: Int = 1
@@ -34,7 +24,7 @@ pub struct File {
 
 /// Open `path` for reading.
 pub fn open(path: Str) -> !File {
-    let fd = @syscall(SYS_OPEN, cstr(path), O_RDONLY, 0)
+    let fd = sys.open(cstr(path), O_RDONLY, 0)
     if fd < 0 {
         return err_code("cannot open '{path}': {errname(-fd)}", -fd)
     }
@@ -43,7 +33,7 @@ pub fn open(path: Str) -> !File {
 
 /// Create or truncate `path` for writing.
 pub fn create(path: Str) -> !File {
-    let fd = @syscall(SYS_OPEN, cstr(path), O_WRONLY | O_CREAT | O_TRUNC, 420)
+    let fd = sys.open(cstr(path), O_WRONLY | O_CREAT | O_TRUNC, 420)
     if fd < 0 {
         return err_code("cannot create '{path}': {errname(-fd)}", -fd)
     }
@@ -52,7 +42,7 @@ pub fn create(path: Str) -> !File {
 
 /// Open `path` for appending, creating it when absent.
 pub fn append(path: Str) -> !File {
-    let fd = @syscall(SYS_OPEN, cstr(path), O_WRONLY | O_CREAT | O_APPEND, 420)
+    let fd = sys.open(cstr(path), O_WRONLY | O_CREAT | O_APPEND, 420)
     if fd < 0 {
         return err_code("cannot open '{path}': {errname(-fd)}", -fd)
     }
@@ -76,7 +66,7 @@ pub fn File.write(self, s: Str) -> !Int {
 /// Read up to `n` bytes.
 pub fn File.read(self, n: Int) -> Str {
     let p = core.str_alloc(n)
-    let got = @syscall(0, self.fd, p + 16, n)
+    let got = sys.read(self.fd, p + 16, n)
     if got <= 0 {
         return ""
     }
@@ -99,7 +89,7 @@ pub fn File.read_all(self) -> Str {
 
 /// Close the handle.
 pub fn File.close(self) {
-    @syscall(SYS_CLOSE, self.fd)
+    sys.close(self.fd)
 }
 
 /// Read a whole file as a string.
@@ -134,40 +124,40 @@ pub fn append_file(path: Str, contents: Str) -> !Void {
 
 /// True when `path` exists.
 pub fn exists(path: Str) -> Bool {
-    let buf = core.alloc(160, 0)
-    return @syscall(SYS_STAT, cstr(path), buf) == 0
+    let buf = core.alloc(sys.STAT_SIZE, 0)
+    return sys.stat(cstr(path), buf) == 0
 }
 
 /// Size of `path` in bytes.
 pub fn size(path: Str) -> !Int {
-    let buf = core.alloc(160, 0)
-    if @syscall(SYS_STAT, cstr(path), buf) != 0 {
+    let buf = core.alloc(sys.STAT_SIZE, 0)
+    if sys.stat(cstr(path), buf) != 0 {
         return err("cannot stat '{path}'")
     }
-    return ok(@load64(buf + 48))
+    return ok(@load64(buf + sys.STAT_SIZE_OFF))
 }
 
 /// True when `path` is a directory.
 pub fn is_dir(path: Str) -> Bool {
-    let buf = core.alloc(160, 0)
-    if @syscall(SYS_STAT, cstr(path), buf) != 0 {
+    let buf = core.alloc(sys.STAT_SIZE, 0)
+    if sys.stat(cstr(path), buf) != 0 {
         return false
     }
-    return (@load32(buf + 24) & 61440) == 16384
+    return (@load32(buf + sys.STAT_MODE_OFF) & 61440) == 16384
 }
 
 /// True when `path` is a regular file.
 pub fn is_file(path: Str) -> Bool {
-    let buf = core.alloc(160, 0)
-    if @syscall(SYS_STAT, cstr(path), buf) != 0 {
+    let buf = core.alloc(sys.STAT_SIZE, 0)
+    if sys.stat(cstr(path), buf) != 0 {
         return false
     }
-    return (@load32(buf + 24) & 61440) == 32768
+    return (@load32(buf + sys.STAT_MODE_OFF) & 61440) == 32768
 }
 
 /// Delete a file.
 pub fn remove(path: Str) -> !Void {
-    if @syscall(SYS_UNLINK, cstr(path)) != 0 {
+    if sys.unlink(cstr(path)) != 0 {
         return err("cannot remove '{path}'")
     }
     return ok(void)
@@ -175,7 +165,7 @@ pub fn remove(path: Str) -> !Void {
 
 /// Create a directory.
 pub fn mkdir(path: Str) -> !Void {
-    let r = @syscall(SYS_MKDIR, cstr(path), 493)
+    let r = sys.mkdir(cstr(path), 493)
     if r != 0 and r != -17 {
         return err("cannot create directory '{path}'")
     }
@@ -204,7 +194,7 @@ pub fn mkdir_all(path: Str) -> !Void {
 
 /// Remove an empty directory.
 pub fn rmdir(path: Str) -> !Void {
-    if @syscall(SYS_RMDIR, cstr(path)) != 0 {
+    if sys.rmdir(cstr(path)) != 0 {
         return err("cannot remove directory '{path}'")
     }
     return ok(void)
@@ -212,7 +202,7 @@ pub fn rmdir(path: Str) -> !Void {
 
 /// Rename or move a path.
 pub fn rename(from: Str, to: Str) -> !Void {
-    if @syscall(SYS_RENAME, cstr(from), cstr(to)) != 0 {
+    if sys.rename(cstr(from), cstr(to)) != 0 {
         return err("cannot rename '{from}' to '{to}'")
     }
     return ok(void)
@@ -220,7 +210,7 @@ pub fn rename(from: Str, to: Str) -> !Void {
 
 /// Entries of a directory, excluding `.` and `..`.
 pub fn read_dir(path: Str) -> ![Str] {
-    let fd = @syscall(SYS_OPEN, cstr(path), 65536 | O_RDONLY, 0)
+    let fd = sys.open(cstr(path), 65536 | O_RDONLY, 0)
     if fd < 0 {
         return err("cannot open directory '{path}'")
     }
@@ -228,9 +218,9 @@ pub fn read_dir(path: Str) -> ![Str] {
     let bufsz = 32768
     let buf = core.alloc(bufsz + 16, 0) + 16
     while true {
-        let n = @syscall(SYS_GETDENTS64, fd, buf, bufsz)
+        let n = @syscall(sys.SYS_GETDENTS64, fd, buf, bufsz)
         if n <= 0 {
-            @syscall(SYS_CLOSE, fd)
+            sys.close(fd)
             return ok(out)
         }
         let mut off = 0
@@ -248,7 +238,7 @@ pub fn read_dir(path: Str) -> ![Str] {
             off += reclen
         }
     }
-    @syscall(SYS_CLOSE, fd)
+    sys.close(fd)
     return ok(out)
 }
 

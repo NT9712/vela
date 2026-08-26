@@ -8,9 +8,6 @@
  * value -- which is also what makes the conservative stack-scanning GC safe.
  */
 #include "vela.h"
-#include <sys/stat.h>
-
-static void chmod_exec(const char *p) { chmod(p, 0755); }
 
 /* ---- registers ---- */
 enum { RAX=0, RCX=1, RDX=2, RBX=3, RSP=4, RBP=5, RSI=6, RDI=7,
@@ -906,7 +903,7 @@ static void emit_start(int *start_off, FnInst *main_fn, FnInst *init_fn,
 
 void rodata_relocate(uint64_t base, uint64_t *fn_addrs, int nfn);
 
-int codegen_run(Unit *u, const char *outpath) {
+int codegen_x64(Unit *u, const char *outpath) {
     memset(&T, 0, sizeof T);
     relocs.len = 0;
 
@@ -980,56 +977,16 @@ int codegen_run(Unit *u, const char *outpath) {
     }
     rodata_relocate(RO_VADDR, fn_addr, nfns);
 
-    /* --- write the ELF --- */
-    Buf out;
-    memset(&out, 0, sizeof out);
-    /* e_ident */
-    buf_u8(&out, 0x7f); buf_str(&out, "ELF");
-    buf_u8(&out, 2); buf_u8(&out, 1); buf_u8(&out, 1); buf_u8(&out, 0);
-    for (int i = 0; i < 8; i++) buf_u8(&out, 0);
-    buf_u16(&out, 2);            /* ET_EXEC */
-    buf_u16(&out, 0x3E);         /* x86-64 */
-    buf_u32(&out, 1);
-    buf_u64(&out, TEXT_VADDR + (uint64_t)start_off);   /* entry */
-    buf_u64(&out, 64);           /* phoff */
-    buf_u64(&out, 0);            /* shoff */
-    buf_u32(&out, 0);
-    buf_u16(&out, 64);           /* ehsize */
-    buf_u16(&out, 56);           /* phentsize */
-    buf_u16(&out, 2);            /* phnum */
-    buf_u16(&out, 64);           /* shentsize */
-    buf_u16(&out, 0);
-    buf_u16(&out, 0);
-
-    /* PT_LOAD 1: text + rodata (R+X) */
-    buf_u32(&out, 1); buf_u32(&out, 5);
-    buf_u64(&out, 0x1000);
-    buf_u64(&out, TEXT_VADDR);
-    buf_u64(&out, TEXT_VADDR);
-    buf_u64(&out, seg1_end);
-    buf_u64(&out, seg1_end);
-    buf_u64(&out, 0x1000);
-
-    /* PT_LOAD 2: data (R+W), zero-filled */
-    uint64_t data_fileoff = 0x1000 + ((seg1_end + 0xFFF) & ~(uint64_t)0xFFF);
-    buf_u32(&out, 1); buf_u32(&out, 6);
-    buf_u64(&out, data_fileoff);
-    buf_u64(&out, DATA_VADDR);
-    buf_u64(&out, DATA_VADDR);
-    buf_u64(&out, 0);
-    buf_u64(&out, rw_size + 4096);
-    buf_u64(&out, 0x1000);
-
-    while (out.len < 0x1000) buf_u8(&out, 0);
-    buf_put(&out, T.data, T.len);
-    while (out.len < 0x1000 + ro_off) buf_u8(&out, 0);
-    buf_put(&out, g_rodata.data.data, g_rodata.data.len);
-
-    FILE *fp = fopen(outpath, "wb");
-    if (!fp) { fatal("cannot write `%s`", outpath); return 0; }
-    fwrite(out.data, 1, out.len, fp);
-    fclose(fp);
-    chmod_exec(outpath);
-    buf_free(&out);
-    return 1;
+    ElfImage img;
+    memset(&img, 0, sizeof img);
+    img.text = &T;
+    img.text_vaddr = TEXT_VADDR;
+    img.ro_off = ro_off;
+    img.ro_vaddr = RO_VADDR;
+    img.data_vaddr = DATA_VADDR;
+    img.rw_size = rw_size;
+    img.entry = TEXT_VADDR + (uint64_t)start_off;
+    img.machine = 62;                     /* EM_X86_64 */
+    return elf_write(&img, outpath);
 }
+

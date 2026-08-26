@@ -511,6 +511,29 @@ struct FnInst {
 typedef struct { Buf data; Vec fixups; } RoData;
 extern RoData g_rodata;
 
+/* ------------------------------------------------------------------ */
+/* targets                                                              */
+/* ------------------------------------------------------------------ */
+
+typedef enum { TARGET_X86_64 = 0, TARGET_ARM64 } Target;
+extern Target g_target;
+const char *target_name(Target t);
+int target_from_name(const char *s, Target *out);
+
+/* Shared ELF64 writer; the backends hand it a text blob and the layout. */
+typedef struct {
+    Buf     *text;
+    uint64_t text_vaddr;
+    size_t   ro_off;         /* offset of rodata within the text segment */
+    uint64_t ro_vaddr;
+    uint64_t data_vaddr;
+    size_t   rw_size;
+    uint64_t entry;
+    uint16_t machine;        /* EM_X86_64 = 62, EM_AARCH64 = 183 */
+} ElfImage;
+
+int elf_write(const ElfImage *img, const char *path);
+
 int sema_run(Unit *u);
 int irgen_run(Unit *u);
 void ir_optimize(Unit *u);
