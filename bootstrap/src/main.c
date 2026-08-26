@@ -304,7 +304,7 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "-q") == 0 || strcmp(a, "--quiet") == 0) opt_quiet = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) { usage(stdout); return 0; }
         else if (strcmp(a, "--version") == 0) {
-            printf("velac 1.0.0 (bootstrap) host %s\n", target_name(g_target));
+            printf("velac 1.1.0 (bootstrap) host %s\n", target_name(g_target));
             return 0;
         }
         else if (a[0] == '-' && a[1]) {

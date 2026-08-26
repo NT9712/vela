@@ -18,7 +18,7 @@ VELAC   := bin/velac
 LIBS    := $(wildcard lib/core/*.vela lib/std/*.vela)
 TOOLS   := $(wildcard tools/*.vela)
 
-VERSION ?= 1.0.0
+VERSION ?= 1.1.0
 ARCH    ?= x86_64
 DISTNAME := vela-$(VERSION)-linux-$(ARCH)
 

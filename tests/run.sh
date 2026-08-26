@@ -143,6 +143,11 @@ PY
 cli_tests() {
   echo "cli tests"
   [ -x "$VELA" ] || { skip "cli" "bin/vela not built"; return; }
+  local mkver cliver
+  mkver="$(sed -n 's/^VERSION ?= //p' "$ROOT/Makefile" | head -1)"
+  cliver="$("$VELA" version | awk '{print $2}')"
+  [ "$mkver" = "$cliver" ] && ok "version is $cliver everywhere" \
+    || bad "version drift" "Makefile says $mkver, vela says $cliver"
   d="$TMP/proj"; mkdir -p "$d"; (cd "$d" && "$VELA" new app >/dev/null 2>&1)
   if [ ! -f "$d/app/vela.toml" ]; then bad "vela new"; return; fi
   ok "vela new"
