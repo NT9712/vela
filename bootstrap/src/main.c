@@ -30,6 +30,15 @@ static int file_exists(const char *p) {
     return stat(p, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+/* Two paths naming the same file, compared by device and inode so that
+   `lib/core/core.vela` and `/abs/lib/core/core.vela` are recognised as one. */
+static int same_file(const char *a, const char *b) {
+    struct stat sa, sb;
+    if (!a || !b) return 0;
+    if (stat(a, &sa) != 0 || stat(b, &sb) != 0) return 0;
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+
 static void dirname_of(const char *path, char *out, size_t n) {
     const char *slash = strrchr(path, '/');
     if (!slash) { snprintf(out, n, "."); return; }
@@ -131,6 +140,16 @@ Module *load_module(const char *modpath, const char *fromfile, Span sp) {
     if (strlen(path) >= sizeof path - 1) {
         diag_add(DIAG_ERROR, sp, "module path for `%s` is too long", modpath);
         return NULL;
+    }
+    /* The same file may be reachable under more than one module path — most
+       obviously when the file being compiled *is* a standard-library module.
+       De-duplicate on the resolved path so nothing is registered twice. */
+    {
+        const char *ipath = intern(path);
+        for (int i = 0; i < g_unit.modules.len; i++) {
+            Module *m = VEC_AT(&g_unit.modules, Module, i);
+            if (m->file == ipath) return m;
+        }
     }
     if (!file_exists(path)) {
         Diag *d = diag_add(DIAG_ERROR, sp, "cannot find module `%s`", modpath);
@@ -312,6 +331,25 @@ int main(int argc, char **argv) {
         char apath[1024];
         snprintf(apath, sizeof apath, "%s", input);
         normalize(apath);
+        /* If the entry file is itself a module we already loaded (checking a
+           standard-library file, say), reuse it rather than parsing it twice. */
+        {
+            char abs[1200];
+            if (apath[0] != '/') {
+                char cwd[1024];
+                if (getcwd(cwd, sizeof cwd)) {
+                    snprintf(abs, sizeof abs, "%s/%s", cwd, apath);
+                    normalize(abs);
+                }
+            }
+            const char *ip = intern(apath);
+            for (int i = 0; i < g_unit.modules.len && !root; i++) {
+                Module *m = VEC_AT(&g_unit.modules, Module, i);
+                if (m->file == ip) root = m;
+                else if (same_file(m->file, apath)) root = m;
+            }
+        }
+        if (root) { g_unit.root = root; goto have_root; }
         SrcFile *sf = src_load(apath, apath);
         if (!sf) { fprintf(stderr, "velac: cannot read `%s`\n", input); return 2; }
         root = NEW(Module);
@@ -335,6 +373,7 @@ int main(int argc, char **argv) {
             if (d->kind == D_USE) load_module(d->path, root->file, d->span);
         }
     }
+have_root:
     g_unit.root = root;
     t_parse = now_ms();
 

@@ -185,6 +185,20 @@ EOF
 
 # ------------------------------------------------------------------ formatter
 
+selfcheck_tests() {
+  echo "self-check (every shipped source type-checks on its own)"
+  local bad_any=0 n=0
+  for f in "$ROOT"/lib/core/*.vela "$ROOT"/lib/std/*.vela "$ROOT"/tools/*.vela \
+           "$ROOT"/examples/*.vela "$ROOT"/tests/run/*.vela "$ROOT"/tests/lib/*.vela \
+           "$ROOT"/bench/*.vela; do
+    n=$((n+1))
+    if ! "$VELAC" -q --no-color --check "$f" >"$TMP/sc.txt" 2>&1; then
+      bad "self-check $(basename "$f")" "$(head -6 "$TMP/sc.txt")"; bad_any=1
+    fi
+  done
+  [ $bad_any -eq 0 ] && ok "$n shipped source files check clean individually"
+}
+
 fmt_tests() {
   echo "formatter tests"
   [ -x "$VELA" ] || { skip "fmt" "bin/vela not built"; return; }
@@ -316,8 +330,9 @@ case "$what" in
   cli)  cli_tests ;;
   lsp)  lsp_tests ;;
   fmt)  fmt_tests ;;
+  selfcheck) selfcheck_tests ;;
   fuzz) fuzz_tests ;;
-  *)    run_tests; fail_tests; unit_tests; fmt_tests; cli_tests; lsp_tests; regress_tests; fuzz_tests ;;
+  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; regress_tests; fuzz_tests ;;
 esac
 
 echo
