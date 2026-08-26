@@ -583,25 +583,9 @@ pub fn Float.max(self, o: Float) -> Float {
     return o
 }
 
-/// Square root (Newton's method; exact for representable squares).
+/// Correctly rounded square root (compiles to a single `sqrtsd`).
 pub fn Float.sqrt(self) -> Float {
-    if self < 0.0 {
-        return 0.0 / 0.0
-    }
-    if self == 0.0 {
-        return 0.0
-    }
-    let mut x = self
-    let mut i = 0
-    while i < 60 {
-        let nx = 0.5 * (x + self / x)
-        if nx == x {
-            return x
-        }
-        x = nx
-        i += 1
-    }
-    return x
+    return @fsqrt(self)
 }
 
 /// True when the value is not a number.

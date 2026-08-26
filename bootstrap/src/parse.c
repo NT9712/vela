@@ -409,8 +409,8 @@ static Expr *parse_lambda_fn(P *p) {
 
 static Expr *parse_match(P *p);
 
-/* Does a `{` here start a struct literal (vs a block)? Only when we are in a
-   context where a struct literal is allowed, which we track with no_struct. */
+/* Does a `{` here start a struct literal (vs a block)? Only in a context where
+   a struct literal is allowed, which is tracked by p_no_struct. */
 static int p_no_struct = 0;
 
 static Expr *parse_primary(P *p) {
@@ -605,7 +605,9 @@ static int looks_like_targs(P *p) {
     }
     if (i >= p->n - 1) return 0;
     TokKind after = p->t[i + 1].kind;
-    if (after != T_LPAREN && after != T_LBRACE) return 0;
+    /* `xs[i] { ... }` is an index followed by a block whenever struct literals
+       are not allowed here (if/while/for/match headers). */
+    if (after != T_LPAREN && !(after == T_LBRACE && !p_no_struct)) return 0;
     /* contents must look like a type list */
     for (int j = p->i + 1; j < i; j++) {
         switch (p->t[j].kind) {

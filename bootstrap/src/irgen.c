@@ -1187,7 +1187,7 @@ static int gen_intrinsic(Gen *g, Expr *e) {
     const char *n = e->name;
     int nargs = e->list.len;
     int vals[8];
-    int is_f2bits = (n == intern("f2bits"));
+    int is_f2bits = (n == intern("f2bits") || n == intern("fsqrt"));
     for (int i = 0; i < nargs && i < 8; i++) {
         Expr *a = VEC_AT(&e->list, Expr, i);
         vals[i] = is_f2bits ? gen_expr(g, a) : gen_word(g, a);
@@ -1235,6 +1235,11 @@ static int gen_intrinsic(Gen *g, Expr *e) {
         return i->dst;
     }
     if (n == intern("restore_regs")) { g_ins(g, IR_RESTORE_REGS); return emit_const(g, 0); }
+    if (n == intern("fsqrt")) {
+        IrIns *i = g_ins(g, IR_FSQRT);
+        i->dst = new_vreg(g, 1); i->a = vals[0];
+        return i->dst;
+    }
     if (n == intern("f2bits")) return bitcast_f2i(g, vals[0]);
     if (n == intern("bits2f")) return bitcast_i2f(g, vals[0]);
     if (n == intern("trap")) { g_ins(g, IR_TRAP); return emit_const(g, 0); }
@@ -1286,6 +1291,7 @@ static int gen_expr(Gen *g, Expr *e) {
             return emit_load_local(g, accs, 0);
         }
         case E_IDENT: {
+            if (e->builtin == BI_VOIDVAL) return emit_const(g, 0);
             Sym *s = (Sym *)e->sym;
             if (s && s->kind == SYM_CONST) return gen_const_sym(g, s, e->type);
             if (s && s->kind == SYM_FN) {

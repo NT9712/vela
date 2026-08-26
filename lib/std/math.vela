@@ -1,0 +1,242 @@
+// std/math — floating-point mathematics.
+//
+// The elementary functions are implemented with argument reduction plus
+// polynomial/series evaluation, so they carry no external dependency.
+
+pub const PI: Float = 3.141592653589793
+pub const E: Float = 2.718281828459045
+pub const TAU: Float = 6.283185307179586
+pub const INF: Float = 1.0e308 * 10.0
+pub const NAN: Float = 0.0 / 0.0
+
+/// Absolute value.
+pub fn abs(x: Float) -> Float {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+/// Square root.
+pub fn sqrt(x: Float) -> Float {
+    return x.sqrt()
+}
+
+/// Largest integer not greater than `x`.
+pub fn floor(x: Float) -> Float {
+    return x.floor()
+}
+
+/// Smallest integer not less than `x`.
+pub fn ceil(x: Float) -> Float {
+    return x.ceil()
+}
+
+/// Nearest integer, halfway cases away from zero.
+pub fn round(x: Float) -> Float {
+    return x.round()
+}
+
+/// The smaller of two values.
+pub fn min(a: Float, b: Float) -> Float {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+/// The larger of two values.
+pub fn max(a: Float, b: Float) -> Float {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+/// Reduce `x` into [-PI, PI].
+fn wrap_pi(x: Float) -> Float {
+    let mut r = x
+    while r > PI {
+        r = r - TAU
+    }
+    while r < -PI {
+        r = r + TAU
+    }
+    return r
+}
+
+/// Sine, via range reduction and the Taylor series.
+pub fn sin(x: Float) -> Float {
+    let r = wrap_pi(x)
+    let mut term = r
+    let mut sum = r
+    let mut n = 1
+    while n < 12 {
+        let d = float(2 * n) * float(2 * n + 1)
+        term = -term * r * r / d
+        sum = sum + term
+        n += 1
+    }
+    return sum
+}
+
+/// Cosine.
+pub fn cos(x: Float) -> Float {
+    return sin(x + PI / 2.0)
+}
+
+/// Tangent.
+pub fn tan(x: Float) -> Float {
+    return sin(x) / cos(x)
+}
+
+/// Natural logarithm.
+pub fn log(x: Float) -> Float {
+    if x <= 0.0 {
+        if x == 0.0 {
+            return -INF
+        }
+        return NAN
+    }
+    // reduce to [1, 2) by halving, then use atanh series
+    let mut e = 0
+    let mut m = x
+    while m >= 2.0 {
+        m = m / 2.0
+        e += 1
+    }
+    while m < 1.0 {
+        m = m * 2.0
+        e -= 1
+    }
+    let z = (m - 1.0) / (m + 1.0)
+    let z2 = z * z
+    let mut term = z
+    let mut sum = z
+    let mut k = 1
+    while k < 24 {
+        term = term * z2
+        sum = sum + term / float(2 * k + 1)
+        k += 1
+    }
+    return 2.0 * sum + float(e) * 0.6931471805599453
+}
+
+/// Base-10 logarithm.
+pub fn log10(x: Float) -> Float {
+    return log(x) / 2.302585092994046
+}
+
+/// Base-2 logarithm.
+pub fn log2(x: Float) -> Float {
+    return log(x) / 0.6931471805599453
+}
+
+/// e raised to `x`.
+pub fn exp(x: Float) -> Float {
+    if x > 709.0 {
+        return INF
+    }
+    if x < -745.0 {
+        return 0.0
+    }
+    // e^x = 2^k * e^r with |r| <= ln2/2
+    let k = int((x / 0.6931471805599453).round())
+    let r = x - float(k) * 0.6931471805599453
+    let mut term = 1.0
+    let mut sum = 1.0
+    let mut n = 1
+    while n < 24 {
+        term = term * r / float(n)
+        sum = sum + term
+        n += 1
+    }
+    return sum * pow2(k)
+}
+
+fn pow2(k: Int) -> Float {
+    let mut r = 1.0
+    let mut i = 0
+    let n = k.abs()
+    while i < n {
+        r = r * 2.0
+        i += 1
+    }
+    if k < 0 {
+        return 1.0 / r
+    }
+    return r
+}
+
+/// `base` raised to `e`.
+pub fn pow(base: Float, e: Float) -> Float {
+    if e == 0.0 {
+        return 1.0
+    }
+    if base == 0.0 {
+        return 0.0
+    }
+    if base < 0.0 {
+        let n = int(e)
+        if float(n) == e {
+            return base.pow(n)
+        }
+        return NAN
+    }
+    return exp(e * log(base))
+}
+
+/// Arctangent.
+pub fn atan(x: Float) -> Float {
+    if x > 1.0 {
+        return PI / 2.0 - atan(1.0 / x)
+    }
+    if x < -1.0 {
+        return -PI / 2.0 - atan(1.0 / x)
+    }
+    let x2 = x * x
+    let mut term = x
+    let mut sum = x
+    let mut n = 1
+    while n < 60 {
+        term = -term * x2
+        sum = sum + term / float(2 * n + 1)
+        n += 1
+    }
+    return sum
+}
+
+/// Two-argument arctangent.
+pub fn atan2(y: Float, x: Float) -> Float {
+    if x > 0.0 {
+        return atan(y / x)
+    }
+    if x < 0.0 {
+        if y >= 0.0 {
+            return atan(y / x) + PI
+        }
+        return atan(y / x) - PI
+    }
+    if y > 0.0 {
+        return PI / 2.0
+    }
+    if y < 0.0 {
+        return -PI / 2.0
+    }
+    return 0.0
+}
+
+/// Hypotenuse without intermediate overflow.
+pub fn hypot(a: Float, b: Float) -> Float {
+    let x = abs(a)
+    let y = abs(b)
+    if x == 0.0 {
+        return y
+    }
+    if y == 0.0 {
+        return x
+    }
+    let m = max(x, y)
+    let n = min(x, y) / m
+    return m * (1.0 + n * n).sqrt()
+}

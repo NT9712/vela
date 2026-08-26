@@ -502,6 +502,12 @@ static void emit_ins(FGen *fg, IrIns *in) {
             fstore(fg, in->dst, 0);
             break;
         }
+        case IR_FSQRT: {
+            fload(fg, 0, in->a);
+            sse_rr(0x51, 0, 0);          /* sqrtsd xmm0, xmm0 */
+            fstore(fg, in->dst, 0);
+            break;
+        }
         case IR_FNEG: {
             load_rm(RAX, RBP, foff(fg, in->a), 8, 0);
             mov_ri(RCX, (int64_t)0x8000000000000000ULL);

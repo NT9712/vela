@@ -316,6 +316,7 @@ static const char *opname(IrOp o) {
         case IR_SHR: return "shr"; case IR_NEG: return "neg"; case IR_NOT: return "not";
         case IR_FADD: return "fadd"; case IR_FSUB: return "fsub"; case IR_FMUL: return "fmul";
         case IR_FDIV: return "fdiv"; case IR_FNEG: return "fneg";
+        case IR_FSQRT: return "fsqrt";
         case IR_EQ: return "eq"; case IR_NE: return "ne"; case IR_LT: return "lt";
         case IR_LE: return "le"; case IR_GT: return "gt"; case IR_GE: return "ge";
         case IR_FEQ: return "feq"; case IR_FNE: return "fne"; case IR_FLT: return "flt";

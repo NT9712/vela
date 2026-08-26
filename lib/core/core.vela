@@ -917,7 +917,6 @@ fn pow10(k: Int) -> Float {
     if k < 0 {
         return 1.0 / pow10(-k)
     }
-    // 10^0 .. 10^22 are exactly representable; build larger powers by squaring
     if k <= 22 {
         let mut r = 1.0
         let mut i = 0
@@ -935,26 +934,320 @@ fn pow10(k: Int) -> Float {
     return r
 }
 
-/// mant * 10^exp10, computed by division when the exponent is negative so the
-/// result is correctly rounded whenever 10^-exp10 is exactly representable.
-fn scale10(mant: Float, exp10: Int) -> Float {
-    if exp10 >= 0 {
-        return mant * pow10(exp10)
+fn fabs(x: Float) -> Float {
+    if x < 0.0 {
+        return -x
     }
-    return mant / pow10(-exp10)
+    return x
 }
 
-fn fabs(x: Float) -> Float { if x < 0.0 { return -x } return x }
+// ------------------------------------------------------- arbitrary integers
+//
+// Just enough big-integer arithmetic to print doubles exactly: little-endian
+// limbs in base 2^32, with the handful of operations a Steele-White style
+// digit generator needs.
 
-fn floor_log10(x: Float) -> Int {
-    let mut e = 0
+const LIMB_BITS: Int = 32
+const LIMB_BASE: Int = 4294967296
+
+fn bn_new(x: Int) -> [Int] {
+    let r: [Int] = []
     let mut v = x
-    if v >= 1.0 {
-        while v >= 10.0 { v = v / 10.0; e += 1 }
-    } else {
-        while v < 1.0 { v = v * 10.0; e -= 1 }
+    while v > 0 {
+        r.push(v & 4294967295)
+        v = (v >> 32) & 0xFFFFFFFF
     }
-    return e
+    return r
+}
+
+fn bn_copy(a: [Int]) -> [Int] {
+    let r: [Int] = []
+    for x in a {
+        r.push(x)
+    }
+    return r
+}
+
+fn bn_trim(a: [Int]) {
+    while len(a) > 0 and a[len(a) - 1] == 0 {
+        a.pop()
+    }
+}
+
+fn bn_is_zero(a: [Int]) -> Bool {
+    return len(a) == 0
+}
+
+fn bn_cmp(a: [Int], b: [Int]) -> Int {
+    if len(a) != len(b) {
+        if len(a) < len(b) {
+            return -1
+        }
+        return 1
+    }
+    let mut i = len(a) - 1
+    while i >= 0 {
+        if a[i] != b[i] {
+            if a[i] < b[i] {
+                return -1
+            }
+            return 1
+        }
+        i -= 1
+    }
+    return 0
+}
+
+/// a -= b, assuming a >= b.
+fn bn_sub(a: [Int], b: [Int]) {
+    let mut borrow = 0
+    let mut i = 0
+    while i < len(a) {
+        let mut d = a[i] - borrow
+        if i < len(b) {
+            d = d - b[i]
+        }
+        if d < 0 {
+            d += LIMB_BASE
+            borrow = 1
+        } else {
+            borrow = 0
+        }
+        a[i] = d
+        i += 1
+    }
+    bn_trim(a)
+}
+
+fn bn_mul_small(a: [Int], m: Int) {
+    let mut carry = 0
+    let mut i = 0
+    while i < len(a) {
+        let v = a[i] * m + carry
+        a[i] = v & 4294967295
+        carry = (v >> 32) & 0xFFFFFFFF
+        i += 1
+    }
+    while carry > 0 {
+        a.push(carry & 4294967295)
+        carry = (carry >> 32) & 0xFFFFFFFF
+    }
+}
+
+fn bn_shl(a: [Int], n: Int) {
+    if len(a) == 0 or n == 0 {
+        return
+    }
+    let words = n / LIMB_BITS
+    let bits = n % LIMB_BITS
+    if bits > 0 {
+        let mut carry = 0
+        let mut i = 0
+        while i < len(a) {
+            let v = (a[i] << bits) | carry
+            a[i] = v & 4294967295
+            carry = (v >> 32) & 0xFFFFFFFF
+            i += 1
+        }
+        if carry > 0 {
+            a.push(carry)
+        }
+    }
+    let mut w = 0
+    while w < words {
+        a.insert(0, 0)
+        w += 1
+    }
+}
+
+fn bn_mul_pow10(a: [Int], p: Int) {
+    let mut left = p
+    while left >= 9 {
+        bn_mul_small(a, 1000000000)
+        left -= 9
+    }
+    if left > 0 {
+        let mut m = 1
+        let mut i = 0
+        while i < left {
+            m = m * 10
+            i += 1
+        }
+        bn_mul_small(a, m)
+    }
+}
+
+fn bn_add_small(a: [Int], v: Int) {
+    let mut carry = v
+    let mut i = 0
+    while carry > 0 {
+        if i >= len(a) {
+            a.push(0)
+        }
+        let s = a[i] + carry
+        a[i] = s & 4294967295
+        carry = (s >> 32) & 0xFFFFFFFF
+        i += 1
+    }
+}
+
+// ------------------------------------------------------------ float printing
+
+fn approx_log10(bexp: Int) -> Int {
+    // floor(bexp * log10(2)); exact enough over the double exponent range
+    let v = bexp * 30103
+    if v >= 0 {
+        return v / 100000
+    }
+    return -((-v + 99999) / 100000)
+}
+
+/// Exact significant digits of `m * 2^k`, as a decimal string of `prec` digits
+/// plus the decimal exponent of the first digit.
+fn exact_digits(m: Int, k: Int, prec: Int) -> [Int] {
+    // num / den == m * 2^k
+    let num = bn_new(m)
+    let den = bn_new(1)
+    if k > 0 {
+        bn_shl(num, k)
+    } else if k < 0 {
+        bn_shl(den, -k)
+    }
+    // scale so that 1 <= num/den < 10
+    let mut e = approx_log10(k + 52)
+    if e > 0 {
+        bn_mul_pow10(den, e)
+    } else if e < 0 {
+        bn_mul_pow10(num, -e)
+    }
+    let den10 = bn_copy(den)
+    bn_mul_small(den10, 10)
+    while bn_cmp(num, den10) >= 0 {
+        bn_mul_small(den, 10)
+        bn_mul_small(den10, 10)
+        e += 1
+    }
+    while bn_cmp(num, den) < 0 {
+        bn_mul_small(num, 10)
+        e -= 1
+    }
+    // generate `prec` digits
+    let digits: [Int] = []
+    let mut i = 0
+    while i < prec {
+        let mut d = 0
+        while bn_cmp(num, den) >= 0 {
+            bn_sub(num, den)
+            d += 1
+        }
+        digits.push(d)
+        bn_mul_small(num, 10)
+        i += 1
+    }
+    // round the last digit
+    bn_mul_small(den, 5)
+    if bn_cmp(num, den) >= 0 {
+        let mut j = prec - 1
+        let mut carry = 1
+        while j >= 0 and carry == 1 {
+            let nd = digits[j] + 1
+            if nd == 10 {
+                digits[j] = 0
+            } else {
+                digits[j] = nd
+                carry = 0
+            }
+            j -= 1
+        }
+        if carry == 1 {
+            digits.insert(0, 1)
+            digits.pop()
+            e += 1
+        }
+    }
+    digits.push(e)
+    return digits
+}
+
+fn digits_to_int(digits: [Int], n: Int) -> Int {
+    let mut v = 0
+    let mut i = 0
+    while i < n {
+        v = v * 10 + digits[i]
+        i += 1
+    }
+    return v
+}
+
+/// Round the first `n` digits of `digits` to `p` digits, returning the value
+/// and reporting through the returned list whether the exponent grew.
+fn round_digits(digits: [Int], n: Int, p: Int) -> [Int] {
+    let out: [Int] = []
+    let mut i = 0
+    while i < p {
+        out.push(digits[i])
+        i += 1
+    }
+    if p < n and digits[p] >= 5 {
+        let mut j = p - 1
+        let mut carry = 1
+        while j >= 0 and carry == 1 {
+            let nd = out[j] + 1
+            if nd == 10 {
+                out[j] = 0
+            } else {
+                out[j] = nd
+                carry = 0
+            }
+            j -= 1
+        }
+        if carry == 1 {
+            out.insert(0, 1)
+            out.pop()
+            out.push(1)      // marker: exponent incremented
+            return out
+        }
+    }
+    out.push(0)
+    return out
+}
+
+/// Does the decimal `mant * 10^q` round to exactly `m * 2^k`?
+fn decimal_matches(mant: Int, q: Int, m: Int, k: Int) -> Bool {
+    // compare 2*|mant*10^q - m*2^k| < 2^k  after clearing negative powers
+    let kk = 0 - k
+    let bigK = kk
+    let bigQ = 0 - q
+    let mut K = bigK
+    if K < 0 {
+        K = 0
+    }
+    let mut Q = bigQ
+    if Q < 0 {
+        Q = 0
+    }
+    // A = mant * 10^(q+Q) * 2^K
+    let A = bn_new(mant)
+    bn_mul_pow10(A, q + Q)
+    bn_shl(A, K)
+    // B = m * 2^(k+K) * 10^Q
+    let B = bn_new(m)
+    bn_shl(B, k + K)
+    bn_mul_pow10(B, Q)
+    // D = |A - B| * 2
+    let mut D = A
+    if bn_cmp(A, B) < 0 {
+        D = B
+        bn_sub(D, A)
+    } else {
+        bn_sub(D, B)
+    }
+    bn_shl(D, 1)
+    // U = 2^(k+K) * 10^Q
+    let U = bn_new(1)
+    bn_shl(U, k + K)
+    bn_mul_pow10(U, Q)
+    return bn_cmp(D, U) < 0
 }
 
 /// Shortest decimal form that reads back as exactly the same `Float`.
@@ -962,53 +1255,71 @@ pub fn float_to_str(v: Float) -> Str {
     let bits = @f2bits(v)
     let expo = (bits >> 52) & 2047
     let frac = bits & 0xFFFFFFFFFFFFF
+    let neg = bits < 0
     if expo == 2047 {
         if frac != 0 {
             return "nan"
         }
-        if bits < 0 {
+        if neg {
             return "-inf"
         }
         return "inf"
     }
-    if v == 0.0 {
-        if bits != 0 {
+    if expo == 0 and frac == 0 {
+        if neg {
             return "-0.0"
         }
         return "0.0"
     }
-    let neg = v < 0.0
-    let a = fabs(v)
-    let e = floor_log10(a)
-    let mut mant = 0
-    let mut prec = 1
-    let mut done = false
-    while prec <= 17 and not done {
-        let scaled = scale10(a, prec - 1 - e)
-        let r = int(scaled + 0.5)
-        if round_trips(r, e - prec + 1, a) {
-            mant = r
-            done = true
-        } else {
-            mant = r
-            prec += 1
+    let mut m = frac
+    let mut k = -1074
+    if expo > 0 {
+        m = frac + 4503599627370496
+        k = expo - 1075
+    }
+    let d = exact_digits(m, k, 17)
+    let e = d[17]
+    let mut best = digits_to_int(d, 17)
+    let mut bestp = 17
+    let mut beste = e
+    let mut p = 1
+    while p < 17 {
+        let r = round_digits(d, 17, p)
+        let bumped = r[p]
+        let mut mant = 0
+        let mut i = 0
+        while i < p {
+            mant = mant * 10 + r[i]
+            i += 1
         }
+        let ee = e + bumped
+        if decimal_matches(mant, ee - p + 1, m, k) {
+            best = mant
+            bestp = p
+            beste = ee
+            p = 17
+        }
+        p += 1
     }
-    let dstr = digits_to_str_pretty(mant, e)
+    let s = digits_to_str_pretty(best, beste)
     if neg {
-        return "-" + dstr
+        return "-" + s
     }
-    return dstr
+    return s
 }
 
-fn round_trips(mant: Int, exp10: Int, target: Float) -> Bool {
-    return scale10(float(mant), exp10) == target
+fn trim_zeros(s: Str) -> Str {
+    let mut n = len(s)
+    while n > 1 and s[n - 1] == '0' {
+        n -= 1
+    }
+    return s[0..n]
 }
 
 fn digits_to_str_pretty(mant: Int, e: Int) -> Str {
-    let ds = int_to_str(mant)
+    let ds = trim_zeros(int_to_str(mant))
     let nd = len(ds)
-    if e >= 0 and e < 17 {
+    if e >= 0 and e < 16 {
         if nd <= e + 1 {
             let mut r = ds
             let mut i = nd
@@ -1029,7 +1340,10 @@ fn digits_to_str_pretty(mant: Int, e: Int) -> Str {
         }
         return r + ds
     }
-    let head = if_str(nd == 1, ds + ".0", ds[0..1] + "." + ds[1..nd])
+    let mut head = ds + ".0"
+    if nd > 1 {
+        head = ds[0..1] + "." + ds[1..nd]
+    }
     return head + "e" + int_to_str(e)
 }
 
@@ -1144,7 +1458,12 @@ pub fn parse_float(s: Str) -> ?Float {
     if not seen {
         return nil
     }
-    let mut r = scale10(float(mant), exp)
+    let mut r = float(mant)
+    if exp > 0 {
+        r = r * pow10(exp)
+    } else if exp < 0 {
+        r = r / pow10(-exp)
+    }
     if neg {
         r = -r
     }

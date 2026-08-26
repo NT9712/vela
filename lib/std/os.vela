@@ -1,0 +1,102 @@
+// std/os — process environment, arguments and exit.
+
+use core
+
+fn cstr_len(p: Int) -> Int {
+    let mut l = 0
+    while @load8(p + l) != 0 {
+        l += 1
+    }
+    return l
+}
+
+/// The command-line arguments, including the program name at index 0.
+pub fn args() -> [Str] {
+    let n = @argc()
+    let v = @argv()
+    let out: [Str] = []
+    for i in 0..n {
+        let p = @load64(v + i * 8)
+        out.push(core.str_from(p, cstr_len(p)))
+    }
+    return out
+}
+
+/// The environment as a map.
+pub fn env() -> {Str: Str} {
+    let out: {Str: Str} = {:}
+    let e = @envp()
+    let mut i = 0
+    while true {
+        let p = @load64(e + i * 8)
+        if p == 0 {
+            return out
+        }
+        let s = core.str_from(p, cstr_len(p))
+        let eq = s.index_of("=")
+        if eq > 0 {
+            out[s[0..eq]] = s[eq + 1..len(s)]
+        }
+        i += 1
+    }
+    return out
+}
+
+/// The value of an environment variable.
+pub fn getenv(name: Str) -> ?Str {
+    let e = @envp()
+    let mut i = 0
+    let prefix = name + "="
+    while true {
+        let p = @load64(e + i * 8)
+        if p == 0 {
+            return nil
+        }
+        let s = core.str_from(p, cstr_len(p))
+        if s.starts_with(prefix) {
+            return s[len(prefix)..len(s)]
+        }
+        i += 1
+    }
+    return nil
+}
+
+/// Terminate the process.
+pub fn exit(code: Int) {
+    core.exit(code)
+}
+
+/// The current working directory.
+pub fn cwd() -> Str {
+    let p = core.str_alloc(4096)
+    let r = @syscall(79, p + 16, 4096)
+    if r <= 0 {
+        return "."
+    }
+    @store64(p + 8, cstr_len(p + 16))
+    return @ref[Str](p)
+}
+
+/// Change the current working directory.
+pub fn chdir(path: Str) -> !Void {
+    let p = core.str_alloc(len(path) + 1)
+    core.mcopy(p + 16, @addr(path) + 16, len(path))
+    @store8(p + 16 + len(path), 0)
+    if @syscall(80, p + 16) != 0 {
+        return err("cannot chdir to '{path}'")
+    }
+    return ok(void)
+}
+
+/// The process identifier.
+pub fn pid() -> Int {
+    return @syscall(39)
+}
+
+/// Sleep for `ms` milliseconds.
+pub fn sleep_ms(ms: Int) {
+    let ts = core.alloc(32, 0)
+    @store64(ts + 16, ms / 1000)
+    @store64(ts + 24, (ms % 1000) * 1000000)
+    @syscall(35, ts + 16, 0)
+}

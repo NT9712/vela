@@ -1250,6 +1250,11 @@ static Type *check_expr(Expr *e, Type *want) {
             break;
         }
         case E_IDENT: {
+            if (e->name == intern("void") && !lookup_capture(cur_fn, e->name)) {
+                e->builtin = BI_VOIDVAL;
+                r = ty_void;
+                break;
+            }
             int bi = builtin_id(e->name);
             Sym *s = lookup_capture(cur_fn, e->name);
             if (!s && bi) { e->builtin = bi; r = ty_void; break; }
@@ -1858,6 +1863,11 @@ static Type *check_expr(Expr *e, Type *want) {
                 r = ty_int;
             }
             else if (n == intern("bits2f")) r = ty_float;
+            else if (n == intern("fsqrt")) {
+                if (e->list.len == 1) { VEC_AT(&e->list, Expr, 0)->type = NULL;
+                                        check_expr(VEC_AT(&e->list, Expr, 0), ty_float); }
+                r = ty_float;
+            }
             else if (n == intern("trap")) r = ty_void;
             else { serr(e->span, "unknown intrinsic `@%s`", n); r = ty_int; }
             break;
