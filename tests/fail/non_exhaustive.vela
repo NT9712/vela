@@ -1,6 +1,10 @@
 // ERROR: must cover every case
 // ERROR: missing: `Color.Blue`
-enum Color { Red, Green, Blue }
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
 fn name(c: Color) -> Str {
     return match c {
         Color.Red => "red",

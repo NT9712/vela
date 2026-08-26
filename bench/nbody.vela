@@ -78,7 +78,7 @@ fn energy(bs: [Body]) -> Float {
 
 fn main() {
     let argv = os.args()
-    let n = if len(argv) > 1{argv[1].to_int() ?? 200000 } else {200000 }
+    let n = if len(argv) > 1{argv[1].to_int() ?? 200000} else {200000}
     let bs = bodies()
     offset_momentum(bs)
     println("{energy(bs)}")

@@ -9,7 +9,7 @@ pub enum Json {
     Num(Float),
     Str(Str),
     List([Json]),
-    Obj({Str: Json }),
+    Obj({Str: Json}),
 }
 
 struct P {
@@ -199,7 +199,7 @@ fn P.array(self) -> !Json {
 
 fn P.object(self) -> !Json {
     self.i += 1
-    let obj: {Str: Json } = {:}
+    let obj: {Str: Json} = {:}
     self.ws()
     if self.i < len(self.s) and self.s[self.i] == '}' {
         self.i += 1
@@ -313,7 +313,7 @@ fn list_str(xs: [Json]) -> Str {
     return "[" + parts.join(",") + "]"
 }
 
-fn obj_str(m: {Str: Json }) -> Str {
+fn obj_str(m: {Str: Json}) -> Str {
     let keys = m.keys()
     keys.sort_by(| a: Str, b: Str | a < b)
     let parts: [Str] = []
@@ -351,7 +351,7 @@ fn list_pretty(xs: [Json], pad: Str, pad2: Str, depth: Int) -> Str {
     return "[\n" + parts.join(",\n") + "\n" + pad + "]"
 }
 
-fn obj_pretty(m: {Str: Json }, pad: Str, pad2: Str, depth: Int) -> Str {
+fn obj_pretty(m: {Str: Json}, pad: Str, pad2: Str, depth: Int) -> Str {
     let keys = m.keys()
     keys.sort_by(| a: Str, b: Str | a < b)
     if len(keys) == 0 {

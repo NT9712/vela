@@ -7,9 +7,7 @@ const CLOCK_REALTIME: Int = 0
 const CLOCK_MONOTONIC: Int = 1
 
 fn clock(which: Int) -> Int {
-    let ts = core.alloc(32, 0)
-    @syscall(sys.SYS_CLOCK_GETTIME, which, ts + 16)
-    return @load64(ts + 16) * 1000000000 + @load64(ts + 24)
+    return sys.clock_ns(which)
 }
 
 /// Nanoseconds since the epoch.

@@ -19,7 +19,7 @@ struct Manifest {
     name: Str,
     version: Str,
     main: Str,
-    deps: {Str: Str },
+    deps: {Str: Str},
 }
 
 fn main() -> Int {

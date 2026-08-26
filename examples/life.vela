@@ -60,7 +60,7 @@ pub fn Board.step(self) -> Board {
         for x in 0..self.w {
             let n = self.neighbours(x, y)
             let alive = self.get(x, y)
-            let born = if alive{n == 2 or n == 3 } else {n == 3 }
+            let born = if alive{n == 2 or n == 3} else {n == 3}
             next.set(x, y, born)
         }
     }
@@ -82,7 +82,7 @@ pub fn Board.to_str(self) -> Str {
     for y in 0..self.h {
         let mut line = ""
         for x in 0..self.w {
-            line = line + if self.get(x, y){"\u{2588}" } else {" " }
+            line = line + if self.get(x, y){"\u{2588}"} else {" "}
         }
         rows.push(line)
     }
@@ -100,9 +100,9 @@ pub fn Board.glider(self, x: Int, y: Int) {
 
 fn main() {
     let argv = os.args()
-    let w = if len(argv) > 1{argv[1].to_int() ?? 40 } else {40 }
-    let h = if len(argv) > 2{argv[2].to_int() ?? 20 } else {20 }
-    let gens = if len(argv) > 3{argv[3].to_int() ?? 40 } else {40 }
+    let w = if len(argv) > 1{argv[1].to_int() ?? 40} else {40}
+    let h = if len(argv) > 2{argv[2].to_int() ?? 20} else {20}
+    let gens = if len(argv) > 3{argv[3].to_int() ?? 40} else {40}
 
     let b0 = board(w, h)
     b0.glider(1, 1)

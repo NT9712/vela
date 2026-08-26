@@ -1,5 +1,7 @@
 // ERROR: `?` can only be used in a function that returns `!T`
-fn get() -> !Int { return ok(1) }
+fn get() -> !Int {
+    return ok(1)
+}
 fn main() {
     let v = get()?
     println("{v}")

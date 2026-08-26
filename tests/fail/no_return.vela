@@ -4,4 +4,6 @@ fn f(n: Int) -> Int {
         return 1
     }
 }
-fn main() { println("{f(1)}") }
+fn main() {
+    println("{f(1)}")
+}

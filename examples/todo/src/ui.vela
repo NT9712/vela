@@ -27,7 +27,7 @@ pub fn show(tasks: [db.Task]) {
     }
     let rows: [[Str]] = [["id", "", "title", "tags"]]
     for t in tasks {
-        let mark = if t.done{"[x]" } else {"[ ]" }
+        let mark = if t.done{"[x]"} else {"[ ]"}
         rows.push([str(t.id), mark, t.title, t.tags.join(", ")])
     }
     io.println(fmt.table(rows))

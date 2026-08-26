@@ -1,2 +1,2 @@
-use 2.5 1 use . , Str while ? or ] for Str "s" or ?? std/io 
- ?? "s" ! | ( ] } return use nil < mut Int
+use 2.5 1 use., Str while ?or ] for Str "s" or ??std/io
+?? "s" !| (] } return use nil < mut Int

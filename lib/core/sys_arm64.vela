@@ -47,7 +47,18 @@ pub fn close(fd: Int) -> Int {
     return @syscall(SYS_CLOSE, fd)
 }
 
-pub fn mmap_anon(n: Int) -> Int {
+/// Reserve address space. MAP_NORESERVE keeps it lazy, so nothing is charged
+/// until a page is touched.
+pub fn mem_reserve(n: Int) -> Int {
+    return @syscall(SYS_MMAP, 0, n, 3, 0x4022, -1, 0)
+}
+
+/// Nothing to do: Linux commits on first touch.
+pub fn mem_commit(_p: Int, _n: Int) -> Int {
+    return 0
+}
+
+pub fn mem_alloc(n: Int) -> Int {
     return @syscall(SYS_MMAP, 0, n, 3, 0x4022, -1, 0)
 }
 
@@ -99,4 +110,183 @@ pub fn dup2(old: Int, new: Int) -> Int {
 pub fn fork() -> Int {
     // no `fork` on AArch64: clone(SIGCHLD, 0, 0, 0, 0)
     return @syscall(220, 17, 0, 0, 0, 0)
+}
+
+// ---------------------------------------------------------- higher level
+//
+// These are the operations where the supported platforms genuinely differ, so
+// they are primitives here rather than being assembled from raw calls above.
+
+pub const O_RDONLY: Int = 0
+pub const O_WRONLY: Int = 1
+pub const O_CREAT: Int = 64
+pub const O_TRUNC: Int = 512
+pub const O_APPEND: Int = 1024
+
+/// True when a `st_mode` names a directory / a regular file.
+pub fn mode_is_dir(m: Int) -> Bool {
+    return (m & 61440) == 16384
+}
+
+pub fn mode_is_file(m: Int) -> Bool {
+    return (m & 61440) == 32768
+}
+
+/// Nanoseconds from a clock: 0 = wall clock, 1 = monotonic.
+pub fn clock_ns(which: Int) -> Int {
+    let ts = scratch(0, 32)
+    @syscall(SYS_CLOCK_GETTIME, which, ts)
+    return @load64(ts) * 1000000000 + @load64(ts + 8)
+}
+
+pub fn sleep_ms(ms: Int) {
+    let ts = scratch(0, 32)
+    @store64(ts, ms / 1000)
+    @store64(ts + 8, (ms % 1000) * 1000000)
+    @syscall(SYS_NANOSLEEP, ts, 0)
+}
+
+pub fn getpid() -> Int {
+    return @syscall(SYS_GETPID)
+}
+
+pub fn is_tty(fd: Int) -> Bool {
+    let buf = scratch(64, 80)
+    return @syscall(SYS_IOCTL, fd, 0x5401, buf) == 0
+}
+
+pub fn getcwd(buf: Int, n: Int) -> Int {
+    return @syscall(SYS_GETCWD, buf, n)
+}
+
+pub fn chdir(path: Int) -> Int {
+    return @syscall(SYS_CHDIR, path)
+}
+
+/// Open a directory for listing. Returns a handle, or a negative value.
+pub fn dir_open(path: Int) -> Int {
+    return open(path, 65536 | O_RDONLY, 0)
+}
+
+/// Read a batch of directory entries into `buf`. Returns bytes written, 0 at
+/// the end. Entries are Linux `dirent64` records.
+pub fn dir_read(h: Int, buf: Int, n: Int) -> Int {
+    return @syscall(SYS_GETDENTS64, h, buf, n)
+}
+
+pub fn dir_close(h: Int) {
+    close(h)
+}
+
+/// Name length and record length of the dirent at `p`.
+pub fn dirent_reclen(p: Int) -> Int {
+    return @load16(p + 16)
+}
+
+pub fn dirent_name(p: Int) -> Int {
+    return p + 19
+}
+
+/// Start a child process. `argv` and `envp` are NULL-terminated pointer blocks;
+/// `out` and `err` are file descriptors to attach, or -1 to inherit.
+pub fn spawn(path: Int, argv: Int, envp: Int, out: Int, err: Int) -> Int {
+    let pid = fork()
+    if pid != 0 {
+        return pid
+    }
+    if out >= 0 {
+        dup2(out, 1)
+    }
+    if err >= 0 {
+        dup2(err, 2)
+    }
+    @syscall(SYS_EXECVE, path, argv, envp)
+    exit_group(127)
+    return -1
+}
+
+/// Wait for a child and return its exit status in shell form.
+pub fn wait_pid(pid: Int) -> Int {
+    let st = scratch(160, 32)
+    @syscall(SYS_WAIT4, pid, st, 0, 0)
+    let raw = @load32(st)
+    if raw & 127 != 0 {
+        return 128 + (raw & 127)
+    }
+    return (raw >> 8) & 255
+}
+
+pub fn kill(pid: Int, sig: Int) -> Int {
+    return @syscall(SYS_KILL, pid, sig)
+}
+
+// -------------------------------------------------------------- sockets
+
+pub const AF_INET: Int = 2
+pub const SOCK_STREAM: Int = 1
+pub const SOL_SOCKET: Int = 1
+pub const SO_REUSEADDR: Int = 2
+
+pub fn net_init() {}
+
+pub fn socket_tcp() -> Int {
+    return @syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, 0)
+}
+
+pub fn connect(fd: Int, addr: Int, len: Int) -> Int {
+    return @syscall(SYS_CONNECT, fd, addr, len)
+}
+
+pub fn bind(fd: Int, addr: Int, len: Int) -> Int {
+    return @syscall(SYS_BIND, fd, addr, len)
+}
+
+pub fn listen(fd: Int, backlog: Int) -> Int {
+    return @syscall(SYS_LISTEN, fd, backlog)
+}
+
+pub fn accept(fd: Int) -> Int {
+    return @syscall(SYS_ACCEPT, fd, 0, 0)
+}
+
+pub fn reuse_addr(fd: Int) {
+    let one = scratch(200, 16)
+    @store32(one, 1)
+    @syscall(SYS_SETSOCKOPT, fd, SOL_SOCKET, SO_REUSEADDR, one, 4)
+}
+
+pub fn sock_send(fd: Int, buf: Int, n: Int) -> Int {
+    return write(fd, buf, n)
+}
+
+pub fn sock_recv(fd: Int, buf: Int, n: Int) -> Int {
+    return read(fd, buf, n)
+}
+
+pub fn sock_close(fd: Int) {
+    @syscall(SYS_SHUTDOWN, fd, 2)
+    close(fd)
+}
+
+/// Windows hands the program one command-line string and one environment
+/// block; POSIX passes vectors on the stack, so these are stubs here and the
+/// callers take the `@argv`/`@envp` path instead.
+pub fn command_line() -> Int {
+    return 0
+}
+
+pub fn environ_block() -> Int {
+    return 0
+}
+
+/// A slice of the runtime scratch area, zeroed. The sys layer cannot allocate,
+/// because the allocator is built on top of it.
+fn scratch(off: Int, n: Int) -> Int {
+    let p = @rt_base() + 512 + off
+    let mut i = 0
+    while i < n {
+        @store8(p + i, 0)
+        i += 1
+    }
+    return p
 }

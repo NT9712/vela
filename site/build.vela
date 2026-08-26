@@ -25,30 +25,18 @@ struct Page {
 }
 
 fn pages() -> [Page] {
-    return [
-        Page{ slug: "index", title: "Vela", nav: "Home", src: "" },
-        Page{ slug: "getting-started", title: "Getting started", nav: "Start", src: "docs/getting-started.md" },
-        Page{ slug: "tour", title: "Language tour", nav: "Tour", src: "docs/tour.md" },
-        Page{ slug: "stdlib", title: "Standard library", nav: "Library", src: "docs/stdlib.md" },
-        Page{ slug: "spec", title: "Specification", nav: "Spec", src: "spec/SPEC.md" },
-        Page{ slug: "memory", title: "Memory model", nav: "Memory", src: "docs/memory.md" },
-        Page{ slug: "compiler", title: "Compiler", nav: "Compiler", src: "docs/compiler.md" },
-        Page{ slug: "diagnostics", title: "Diagnostics", nav: "Errors", src: "docs/diagnostics.md" },
-        Page{ slug: "performance", title: "Performance", nav: "Speed", src: "docs/performance.md" },
-        Page{ slug: "bootstrap", title: "Bootstrap", nav: "Bootstrap", src: "docs/bootstrap.md" },
-        Page{ slug: "contributing", title: "Contributing", nav: "Contribute", src: "docs/contributing.md" },
-    ]
+    return [Page{ slug: "index", title: "Vela", nav: "Home", src: "" }, Page{ slug: "getting-started", title: "Getting started", nav: "Start", src: "docs/getting-started.md" }, Page{ slug: "tour", title: "Language tour", nav: "Tour", src: "docs/tour.md" }, Page{ slug: "stdlib", title: "Standard library", nav: "Library", src: "docs/stdlib.md" }, Page{ slug: "spec", title: "Specification", nav: "Spec", src: "spec/SPEC.md" }, Page{ slug: "memory", title: "Memory model", nav: "Memory", src: "docs/memory.md" }, Page{ slug: "compiler", title: "Compiler", nav: "Compiler", src: "docs/compiler.md" }, Page{ slug: "diagnostics", title: "Diagnostics", nav: "Errors", src: "docs/diagnostics.md" }, Page{ slug: "performance", title: "Performance", nav: "Speed", src: "docs/performance.md" }, Page{ slug: "platforms", title: "Platforms", nav: "Platforms", src: "docs/platforms.md" }, Page{ slug: "bootstrap", title: "Bootstrap", nav: "Bootstrap", src: "docs/bootstrap.md" }, Page{ slug: "contributing", title: "Contributing", nav: "Contribute", src: "docs/contributing.md" },]
 }
 
 fn main() -> !Void {
     let argv = os.args()
-    let root = if len(argv) > 1 { argv[1] } else { ".." }
+    let root = if len(argv) > 1{argv[1]} else {".."}
     let out = path.join([root, "site", "public"])
     fs.mkdir_all(out)?
 
     let ps = pages()
     for p in ps {
-        let body = if p.slug == "index" { home_body(root) } else { render(fs.read_file(path.join([root, p.src]))?) }
+        let body = if p.slug == "index"{home_body(root)} else {render(fs.read_file(path.join([root, p.src]))?)}
         let html = shell(p, ps, body)
         fs.write_file(path.join([out, p.slug + ".html"]), html)?
         io.println("  {p.slug}.html  {len(html)} bytes")
@@ -68,7 +56,7 @@ fn shell(p: Page, ps: [Page], body: Str) -> Str {
     b.push("<meta charset=\"utf-8\">\n")
     b.push("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n")
     b.push("<title>")
-    b.push(esc(if p.slug == "index" { "{SITE} — a small, fast, native language" } else { "{p.title} · {SITE}" }))
+    b.push(esc(if p.slug == "index"{"{SITE} — a small, fast, native language"} else {"{p.title} · {SITE}"}))
     b.push("</title>\n")
     b.push("<meta name=\"description\" content=\"" + esc(TAGLINE) + "\">\n")
     b.push("<meta property=\"og:title\" content=\"" + esc(p.title) + "\">\n")
@@ -86,7 +74,7 @@ fn shell(p: Page, ps: [Page], body: Str) -> Str {
         if q.slug == "index" {
             continue
         }
-        let cls = if q.slug == p.slug { " class=\"on\"" } else { "" }
+        let cls = if q.slug == p.slug{" class=\"on\""} else {""}
         b.push("<a{cls} href=\"/{q.slug}\">{esc(q.nav)}</a>")
     }
     b.push("<a class=\"gh\" href=\"{REPO}\">GitHub</a>")
@@ -153,9 +141,7 @@ fn home_body(root: Str) -> Str {
     b.push("<h2>Two targets, no cross toolchain</h2>\n")
     b.push("<p>The compiler encodes the instructions and writes the ELF itself, so\n")
     b.push("cross-compiling needs nothing installed beyond <code>velac</code>.</p>\n")
-    b.push(highlight_block("console", "vela build --target arm64\n" +
-        "file build/hello-arm64\n" +
-        "build/hello-arm64: ELF 64-bit LSB executable, ARM aarch64, statically linked\n"))
+    b.push(highlight_block("console", "vela build --target arm64\n" + "file build/hello-arm64\n" + "build/hello-arm64: ELF 64-bit LSB executable, ARM aarch64, statically linked\n"))
 
     b.push("<h2>Honest limits</h2>\n<ul>\n")
     b.push("<li><b>Linux only.</b> Two architectures, x86-64 and ARM64, both ELF64.</li>\n")
@@ -179,7 +165,7 @@ fn sitemap(ps: [Page]) -> Str {
     b.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
     b.push("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n")
     for p in ps {
-        let loc = if p.slug == "index" { "/" } else { "/" + p.slug }
+        let loc = if p.slug == "index"{"/"} else {"/" + p.slug}
         b.push("  <url><loc>https://vela-lang.vercel.app{loc}</loc></url>\n")
     }
     b.push("</urlset>\n")
@@ -266,7 +252,7 @@ fn render(md: Str) -> Str {
                 i += 1
                 // continuation lines are indented and not a new bullet
                 while i < n and len(lines[i].trim()) > 0 and lines[i].starts_with("  ") and
-                      not lines[i].trim().starts_with("- ") and not lines[i].trim().starts_with("* ") {
+                    not lines[i].trim().starts_with("- ") and not lines[i].trim().starts_with("* ") {
                     item.push(" ")
                     item.push(lines[i].trim())
                     i += 1
@@ -307,8 +293,8 @@ fn render(md: Str) -> Str {
         while i < n {
             let l = lines[i].trim()
             if len(l) == 0 or l.starts_with("#") or l.starts_with("```") or
-               l.starts_with("|") or l.starts_with("- ") or l.starts_with("* ") or
-               l.starts_with("> ") or l == "---" or is_ol(l) {
+                l.starts_with("|") or l.starts_with("- ") or l.starts_with("* ") or
+                l.starts_with("> ") or l == "---" or is_ol(l) {
                 break
             }
             if para.len() > 0 {
@@ -464,9 +450,9 @@ fn fix_link(u: Str) -> Str {
         return "/spec"
     }
     if u.starts_with("../examples") or u.starts_with("examples") or
-       u.starts_with("../lib") or u.starts_with("lib") or
-       u.starts_with("../bench") or u.starts_with("../tests") or
-       u.starts_with("editor/") or u.starts_with("../editor") {
+        u.starts_with("../lib") or u.starts_with("lib") or
+        u.starts_with("../bench") or u.starts_with("../tests") or
+        u.starts_with("editor/") or u.starts_with("../editor") {
         return REPO + "/blob/main/" + u.replace("../", "")
     }
     if u.ends_with(".md") {
@@ -560,9 +546,7 @@ fn ident_class(name: Str) -> Str {
     if len(name) == 0 {
         return ""
     }
-    let builtins = ["str", "int", "float", "byte", "bool", "len", "print",
-                    "println", "panic", "assert", "assert_eq", "assert_ne",
-                    "ok", "err", "err_code", "void", "buf", "buf_with"]
+    let builtins = ["str", "int", "float", "byte", "bool", "len", "print", "println", "panic", "assert", "assert_eq", "assert_ne", "ok", "err", "err_code", "void", "buf", "buf_with"]
     if builtins.contains(name) {
         return "b"
     }
@@ -592,4 +576,3 @@ fn esc(s: Str) -> Str {
 }
 
 // ---------------------------------------------------------------------- css
-

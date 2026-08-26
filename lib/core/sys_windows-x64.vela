@@ -1,0 +1,588 @@
+// core/sys — the Windows system layer.
+//
+// Windows has no stable system-call interface: the numbers change between
+// builds, and the supported boundary is the DLLs. So this file makes no
+// `@syscall` at all. It calls kernel32 and ws2_32 through `@winapi(N, ...)`,
+// where N indexes the import table the compiler emits. The indices below are
+// the ABI between this file and `bootstrap/src/pe.c`; append only.
+
+pub const ARCH: Str = "windows-x64"
+
+const ExitProcess: Int = 0
+const GetStdHandle: Int = 1
+const WriteFile: Int = 2
+const ReadFile: Int = 3
+const VirtualAlloc: Int = 4
+const CreateFileA: Int = 5
+const CloseHandle: Int = 6
+const DeleteFileA: Int = 7
+const CreateDirectoryA: Int = 8
+const RemoveDirectoryA: Int = 9
+const MoveFileA: Int = 10
+const GetFileAttributesA: Int = 11
+const GetFileSizeEx: Int = 12
+const FindFirstFileA: Int = 13
+const FindNextFileA: Int = 14
+const FindClose: Int = 15
+const GetCommandLineA: Int = 16
+const GetEnvironmentStringsA: Int = 17
+const GetCurrentDirectoryA: Int = 18
+const SetCurrentDirectoryA: Int = 19
+const GetCurrentProcessId: Int = 20
+const SleepMs: Int = 21
+const QueryPerformanceCounter: Int = 22
+const QueryPerformanceFrequency: Int = 23
+const GetSystemTimeAsFileTime: Int = 24
+const CreateProcessA: Int = 25
+const WaitForSingleObject: Int = 26
+const GetExitCodeProcess: Int = 27
+const CreatePipe: Int = 28
+const SetHandleInformation: Int = 29
+const TerminateProcess: Int = 30
+const OpenProcess: Int = 31
+const GetConsoleMode: Int = 32
+const SetFilePointerEx: Int = 33
+const GetModuleFileNameA: Int = 34
+const WSAStartup: Int = 35
+const WinSocket: Int = 36
+const WinConnect: Int = 37
+const WinBind: Int = 38
+const WinListen: Int = 39
+const WinAccept: Int = 40
+const WinSend: Int = 41
+const WinRecv: Int = 42
+const CloseSocket: Int = 43
+const WinSetSockOpt: Int = 44
+const WinShutdown: Int = 45
+
+// File descriptors 0, 1 and 2 are mapped onto the standard handles; anything
+// else is already a HANDLE.
+const STD_INPUT: Int = -10
+const STD_OUTPUT: Int = -11
+const STD_ERROR: Int = -12
+
+pub const O_RDONLY: Int = 0
+pub const O_WRONLY: Int = 1
+pub const O_CREAT: Int = 64
+pub const O_TRUNC: Int = 512
+pub const O_APPEND: Int = 1024
+
+pub const STAT_SIZE: Int = 64
+pub const STAT_MODE_OFF: Int = 0
+pub const STAT_SIZE_OFF: Int = 8
+
+fn scratch(off: Int, n: Int) -> Int {
+    let p = @rt_base() + 512 + off
+    let mut i = 0
+    while i < n {
+        @store8(p + i, 0)
+        i += 1
+    }
+    return p
+}
+
+fn handle_of(fd: Int) -> Int {
+    if fd == 0 {
+        return @winapi(GetStdHandle, STD_INPUT)
+    }
+    if fd == 1 {
+        return @winapi(GetStdHandle, STD_OUTPUT)
+    }
+    if fd == 2 {
+        return @winapi(GetStdHandle, STD_ERROR)
+    }
+    return fd
+}
+
+pub fn write(fd: Int, buf: Int, n: Int) -> Int {
+    let written = scratch(0, 8)
+    if @winapi(WriteFile, handle_of(fd), buf, n, written, 0) & DWORD == 0 {
+        return -1
+    }
+    return @load32(written)
+}
+
+pub fn read(fd: Int, buf: Int, n: Int) -> Int {
+    let got = scratch(8, 8)
+    if @winapi(ReadFile, handle_of(fd), buf, n, got, 0) & DWORD == 0 {
+        return 0
+    }
+    return @load32(got)
+}
+
+pub fn close(fd: Int) -> Int {
+    if fd <= 2 {
+        return 0
+    }
+    return @winapi(CloseHandle, fd)
+}
+
+/// Reserve address space without committing it. Committing a gigabyte up front
+/// would count against the system commit charge, so the heap is committed a
+/// chunk at a time as it grows.
+pub fn mem_reserve(n: Int) -> Int {
+    return @winapi(VirtualAlloc, 0, n, 0x2000, 4)
+}
+
+/// Make a reserved range usable. Windows zeroes newly committed pages.
+pub fn mem_commit(p: Int, n: Int) -> Int {
+    return @winapi(VirtualAlloc, p, n, 0x1000, 4)
+}
+
+/// Reserve and commit in one step, for the small fixed-size regions.
+pub fn mem_alloc(n: Int) -> Int {
+    return @winapi(VirtualAlloc, 0, n, 0x3000, 4)
+}
+
+pub fn exit_group(code: Int) {
+    @winapi(ExitProcess, code)
+}
+
+// --------------------------------------------------------------- files
+
+const GENERIC_READ: Int = 0x80000000
+const GENERIC_WRITE: Int = 0x40000000
+const FILE_SHARE_ALL: Int = 7
+const CREATE_ALWAYS: Int = 2
+const OPEN_EXISTING: Int = 3
+const OPEN_ALWAYS: Int = 4
+const FILE_ATTRIBUTE_NORMAL: Int = 128
+const INVALID_HANDLE: Int = -1
+// Functions returning DWORD leave the upper half of rax undefined, so their
+// results are masked to 32 bits before being compared.
+const INVALID_ATTRS: Int = 0xFFFFFFFF
+const DWORD: Int = 0xFFFFFFFF
+const FILE_ATTRIBUTE_DIRECTORY: Int = 16
+
+pub fn open(path: Int, flags: Int, _mode: Int) -> Int {
+    let mut access = GENERIC_READ
+    let mut disp = OPEN_EXISTING
+    if flags & O_WRONLY != 0 {
+        access = GENERIC_WRITE
+        if flags & O_APPEND != 0 {
+            disp = OPEN_ALWAYS
+        } else {
+            disp = CREATE_ALWAYS
+        }
+    }
+    let h = @winapi(CreateFileA, path, access, FILE_SHARE_ALL, 0, disp, FILE_ATTRIBUTE_NORMAL, 0)
+    if h == INVALID_HANDLE {
+        return -2
+    }
+    if flags & O_APPEND != 0 {
+        // seek to the end: FILE_END = 2
+        @winapi(SetFilePointerEx, h, 0, 0, 2)
+    }
+    return h
+}
+
+/// A two-word stand-in for `struct stat`: attributes then size.
+pub fn stat(path: Int, buf: Int) -> Int {
+    let attrs = @winapi(GetFileAttributesA, path) & DWORD
+    if attrs == INVALID_ATTRS {
+        return -1
+    }
+    @store64(buf + STAT_MODE_OFF, attrs)
+    @store64(buf + STAT_SIZE_OFF, 0)
+    if attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return 0
+    }
+    let h = @winapi(CreateFileA, path, GENERIC_READ, FILE_SHARE_ALL, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0)
+    if h != INVALID_HANDLE {
+        let sz = scratch(16, 8)
+        @winapi(GetFileSizeEx, h, sz)
+        @store64(buf + STAT_SIZE_OFF, @load64(sz))
+        @winapi(CloseHandle, h)
+    }
+    return 0
+}
+
+/// True when the attribute word from `stat` names a directory.
+pub fn mode_is_dir(m: Int) -> Bool {
+    return m & FILE_ATTRIBUTE_DIRECTORY != 0
+}
+
+pub fn mode_is_file(m: Int) -> Bool {
+    return m & FILE_ATTRIBUTE_DIRECTORY == 0
+}
+
+pub fn unlink(path: Int) -> Int {
+    if @winapi(DeleteFileA, path) & DWORD == 0 {
+        return -1
+    }
+    return 0
+}
+
+pub fn mkdir(path: Int, _mode: Int) -> Int {
+    if @winapi(CreateDirectoryA, path, 0) & DWORD == 0 {
+        return -17
+    }
+    return 0
+}
+
+pub fn rmdir(path: Int) -> Int {
+    if @winapi(RemoveDirectoryA, path) & DWORD == 0 {
+        return -1
+    }
+    return 0
+}
+
+pub fn rename(from: Int, to: Int) -> Int {
+    @winapi(DeleteFileA, to)
+    if @winapi(MoveFileA, from, to) & DWORD == 0 {
+        return -1
+    }
+    return 0
+}
+
+pub fn readlink(_path: Int, buf: Int, n: Int) -> Int {
+    // Used only to find our own executable; that is a different call here.
+    return @winapi(GetModuleFileNameA, 0, buf, n) & DWORD
+}
+
+// ---------------------------------------------------------- directories
+//
+// FindFirstFileA wants a `dir\*` pattern and fills a WIN32_FIND_DATA whose
+// file name sits at offset 44. The POSIX side hands back packed dirent
+// records, so this side synthesises records of the same shape: a 2-byte
+// record length at +16 and a NUL-terminated name at +19.
+
+const FIND_DATA_NAME: Int = 44
+const FIND_DATA_SIZE: Int = 592
+
+pub fn dir_open(path: Int) -> Int {
+    // build "<path>\*"
+    let pat = scratch(256, 600)
+    let mut i = 0
+    while @load8(path + i) != 0 and i < 500 {
+        @store8(pat + i, @load8(path + i))
+        i += 1
+    }
+    if i > 0 and @load8(pat + i - 1) != 92 and @load8(pat + i - 1) != 47 {
+        @store8(pat + i, 92)
+        i += 1
+    }
+    @store8(pat + i, 42)
+    @store8(pat + i + 1, 0)
+    let fd = scratch(1024, FIND_DATA_SIZE)
+    let h = @winapi(FindFirstFileA, pat, fd)
+    if h == INVALID_HANDLE {
+        return -1
+    }
+    // stash the handle and a "first entry is pending" flag
+    @store64(@rt_base() + 512 + 2048, h)
+    @store64(@rt_base() + 512 + 2056, 1)
+    return h
+}
+
+pub fn dir_read(h: Int, buf: Int, n: Int) -> Int {
+    let fd = @rt_base() + 512 + 1024
+    let pending = @rt_base() + 512 + 2056
+    let mut written = 0
+    while written + 320 < n {
+        if @load64(pending) == 0 {
+            if @winapi(FindNextFileA, h, fd) == 0 {
+                return written
+            }
+        }
+        @store64(pending, 0)
+        let name = fd + FIND_DATA_NAME
+        let mut l = 0
+        while @load8(name + l) != 0 and l < 260 {
+            l += 1
+        }
+        let rec = buf + written
+        let reclen = 24 + l
+        @store16(rec + 16, reclen)
+        let mut k = 0
+        while k < l {
+            @store8(rec + 19 + k, @load8(name + k))
+            k += 1
+        }
+        @store8(rec + 19 + l, 0)
+        written += reclen
+    }
+    return written
+}
+
+pub fn dir_close(h: Int) {
+    @winapi(FindClose, h)
+}
+
+pub fn dirent_reclen(p: Int) -> Int {
+    return @load16(p + 16)
+}
+
+pub fn dirent_name(p: Int) -> Int {
+    return p + 19
+}
+
+// ------------------------------------------------------------ time, misc
+
+pub fn clock_ns(which: Int) -> Int {
+    if which == 1 {
+        let c = scratch(24, 8)
+        let f = scratch(32, 8)
+        @winapi(QueryPerformanceCounter, c)
+        @winapi(QueryPerformanceFrequency, f)
+        let freq = @load64(f)
+        if freq == 0 {
+            return 0
+        }
+        return (@load64(c) / freq) * 1000000000 + ((@load64(c) % freq) * 1000000000) / freq
+    }
+    // FILETIME: 100 ns ticks since 1601; shift to the Unix epoch
+    let ft = scratch(40, 8)
+    @winapi(GetSystemTimeAsFileTime, ft)
+    return (@load64(ft) - 116444736000000000) * 100
+}
+
+pub fn sleep_ms(ms: Int) {
+    @winapi(SleepMs, ms)
+}
+
+pub fn getpid() -> Int {
+    return @winapi(GetCurrentProcessId) & DWORD
+}
+
+pub fn is_tty(fd: Int) -> Bool {
+    let mode = scratch(48, 8)
+    return @winapi(GetConsoleMode, handle_of(fd), mode) & DWORD != 0
+}
+
+pub fn getcwd(buf: Int, n: Int) -> Int {
+    return @winapi(GetCurrentDirectoryA, n, buf) & DWORD
+}
+
+pub fn chdir(path: Int) -> Int {
+    if @winapi(SetCurrentDirectoryA, path) & DWORD == 0 {
+        return -1
+    }
+    return 0
+}
+
+/// The raw command line, which the runtime splits itself.
+pub fn command_line() -> Int {
+    return @winapi(GetCommandLineA)
+}
+
+/// The environment block: NUL-separated `K=V`, terminated by an empty string.
+pub fn environ_block() -> Int {
+    return @winapi(GetEnvironmentStringsA)
+}
+
+// ---------------------------------------------------------------- process
+
+const STARTF_USESTDHANDLES: Int = 256
+const HANDLE_FLAG_INHERIT: Int = 1
+const INFINITE: Int = -1
+
+pub fn pipe(fds: Int) -> Int {
+    let sa = scratch(56, 24)
+    @store32(sa, 24)
+    @store64(sa + 8, 0)
+    @store32(sa + 16, 1)
+    let r = scratch(88, 8)
+    let wr = scratch(96, 8)
+    if @winapi(CreatePipe, r, wr, sa, 0) & DWORD == 0 {
+        return -1
+    }
+    // Both ends are inheritable, but if the child inherited the read end it
+    // would keep the pipe open and the parent would block draining it.
+    @winapi(SetHandleInformation, @load64(r), HANDLE_FLAG_INHERIT, 0)
+    @store64(fds, @load64(r))
+    @store64(fds + 8, @load64(wr))
+    return 0
+}
+
+pub fn dup2(_old: Int, _new: Int) -> Int {
+    return 0
+}
+
+pub fn fork() -> Int {
+    return -1
+}
+
+/// True when an argument has to be quoted to survive the round trip through
+/// `CommandLineToArgvW`. Quoting everything unconditionally would work for
+/// normal programs but confuses `cmd.exe`, which parses quotes itself.
+fn needs_quotes(p: Int) -> Bool {
+    if @load8(p) == 0 {
+        return true
+    }
+    let mut k = 0
+    while @load8(p + k) != 0 {
+        let c = @load8(p + k)
+        if c == 32 or c == 9 or c == 34 {
+            return true
+        }
+        k += 1
+    }
+    return false
+}
+
+/// CreateProcessA with an explicit STARTUPINFO, which is how a child gets
+/// redirected handles on Windows. `argv` is the POSIX-style pointer block the
+/// caller built; the command line is reconstructed from it using the quoting
+/// rules the C runtime documents.
+pub fn spawn(_path: Int, argv: Int, _envp: Int, out: Int, err: Int) -> Int {
+    let cmd = scratch(2064, 4096)
+    let mut w = 0
+    let mut i = 0
+    while true {
+        let p = @load64(argv + i * 8)
+        if p == 0 {
+            break
+        }
+        if i > 0 {
+            @store8(cmd + w, 32)
+            w += 1
+        }
+        if not needs_quotes(p) {
+            let mut k = 0
+            while @load8(p + k) != 0 and w < 4000 {
+                @store8(cmd + w, @load8(p + k))
+                w += 1
+                k += 1
+            }
+        } else {
+            @store8(cmd + w, 34)
+            w += 1
+            let mut k = 0
+            while @load8(p + k) != 0 and w < 3990 {
+                // A run of backslashes is only special before a quote, where
+                // each one has to be doubled.
+                let mut nbs = 0
+                while @load8(p + k) == 92 {
+                    nbs += 1
+                    k += 1
+                }
+                let c = @load8(p + k)
+                let mut reps = nbs
+                if c == 34 or c == 0 {
+                    reps = nbs * 2
+                }
+                let mut j = 0
+                while j < reps and w < 3990 {
+                    @store8(cmd + w, 92)
+                    w += 1
+                    j += 1
+                }
+                if c == 0 {
+                    break
+                }
+                if c == 34 {
+                    @store8(cmd + w, 92)
+                    w += 1
+                }
+                @store8(cmd + w, c)
+                w += 1
+                k += 1
+            }
+            @store8(cmd + w, 34)
+            w += 1
+        }
+        i += 1
+    }
+    @store8(cmd + w, 0)
+
+    let si = scratch(6160, 104)
+    @store32(si, 104)
+    let mut hout = out
+    let mut herr = err
+    if hout < 0 {
+        hout = handle_of(1)
+    }
+    if herr < 0 {
+        herr = handle_of(2)
+    }
+    @store32(si + 60, STARTF_USESTDHANDLES)
+    @store64(si + 80, handle_of(0))
+    @store64(si + 88, hout)
+    @store64(si + 96, herr)
+
+    let pi = scratch(6272, 32)
+    if @winapi(CreateProcessA, 0, cmd, 0, 0, 1, 0, 0, 0, si, pi) & DWORD == 0 {
+        return -1
+    }
+    @winapi(CloseHandle, @load64(pi + 8))
+    return @load64(pi)
+}
+
+pub fn wait_pid(pid: Int) -> Int {
+    @winapi(WaitForSingleObject, pid, INFINITE)
+    let code = scratch(6304, 8)
+    @winapi(GetExitCodeProcess, pid, code)
+    let c = @load32(code)
+    @winapi(CloseHandle, pid)
+    return c & 255
+}
+
+pub fn kill(pid: Int, _sig: Int) -> Int {
+    let h = @winapi(OpenProcess, 1, 0, pid)
+    if h == 0 {
+        return -1
+    }
+    @winapi(TerminateProcess, h, 1)
+    @winapi(CloseHandle, h)
+    return 0
+}
+
+// ---------------------------------------------------------------- sockets
+
+pub const AF_INET: Int = 2
+pub const SOCK_STREAM: Int = 1
+pub const SOL_SOCKET: Int = 0xFFFF
+pub const SO_REUSEADDR: Int = 4
+
+pub fn net_init() {
+    if @load64(@rt_base() + 512 + 6320) != 0 {
+        return
+    }
+    let wsadata = scratch(6336, 408)
+    @winapi(WSAStartup, 0x0202, wsadata)
+    @store64(@rt_base() + 512 + 6320, 1)
+}
+
+pub fn socket_tcp() -> Int {
+    return @winapi(WinSocket, AF_INET, SOCK_STREAM, 6)
+}
+
+pub fn connect(fd: Int, addr: Int, len: Int) -> Int {
+    return @winapi(WinConnect, fd, addr, len)
+}
+
+pub fn bind(fd: Int, addr: Int, len: Int) -> Int {
+    return @winapi(WinBind, fd, addr, len)
+}
+
+pub fn listen(fd: Int, backlog: Int) -> Int {
+    return @winapi(WinListen, fd, backlog)
+}
+
+pub fn accept(fd: Int) -> Int {
+    return @winapi(WinAccept, fd, 0, 0)
+}
+
+pub fn reuse_addr(fd: Int) {
+    let one = scratch(6752, 8)
+    @store32(one, 1)
+    @winapi(WinSetSockOpt, fd, SOL_SOCKET, SO_REUSEADDR, one, 4)
+}
+
+pub fn sock_send(fd: Int, buf: Int, n: Int) -> Int {
+    return @winapi(WinSend, fd, buf, n, 0)
+}
+
+pub fn sock_recv(fd: Int, buf: Int, n: Int) -> Int {
+    let r = @winapi(WinRecv, fd, buf, n, 0)
+    if r < 0 {
+        return 0
+    }
+    return r
+}
+
+pub fn sock_close(fd: Int) {
+    @winapi(WinShutdown, fd, 2)
+    @winapi(CloseSocket, fd)
+}

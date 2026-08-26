@@ -11,7 +11,19 @@
 Target g_target = TARGET_X86_64;
 
 const char *target_name(Target t) {
-    return t == TARGET_ARM64 ? "arm64" : "x86_64";
+    switch (t) {
+        case TARGET_ARM64: return "arm64";
+        case TARGET_WINDOWS_X64: return "windows-x64";
+        case TARGET_MACOS_X64: return "macos-x64";
+        case TARGET_MACOS_ARM64: return "macos-arm64";
+        default: return "x86_64";
+    }
+}
+
+TargetOS target_os(Target t) {
+    if (t == TARGET_WINDOWS_X64) return OS_WINDOWS;
+    if (t == TARGET_MACOS_X64 || t == TARGET_MACOS_ARM64) return OS_MACOS;
+    return OS_LINUX;
 }
 
 int target_from_name(const char *s, Target *out) {
@@ -19,6 +31,18 @@ int target_from_name(const char *s, Target *out) {
     if (!strcmp(s, "x86_64") || !strcmp(s, "x86-64") || !strcmp(s, "amd64") ||
         !strcmp(s, "x64")) { *out = TARGET_X86_64; return 1; }
     if (!strcmp(s, "arm64") || !strcmp(s, "aarch64")) { *out = TARGET_ARM64; return 1; }
+    if (!strcmp(s, "windows") || !strcmp(s, "windows-x64") ||
+        !strcmp(s, "win64") || !strcmp(s, "windows-x86_64")) {
+        *out = TARGET_WINDOWS_X64; return 1;
+    }
+    if (!strcmp(s, "macos") || !strcmp(s, "macos-x64") || !strcmp(s, "darwin") ||
+        !strcmp(s, "macos-x86_64") || !strcmp(s, "darwin-x64")) {
+        *out = TARGET_MACOS_X64; return 1;
+    }
+    if (!strcmp(s, "macos-arm64") || !strcmp(s, "darwin-arm64") ||
+        !strcmp(s, "macos-aarch64") || !strcmp(s, "apple-silicon")) {
+        *out = TARGET_MACOS_ARM64; return 1;
+    }
     return 0;
 }
 

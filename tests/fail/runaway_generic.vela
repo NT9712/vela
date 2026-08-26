@@ -1,11 +1,13 @@
 // ERROR: has been instantiated 512 times and is still growing
 // ERROR: never terminates
-struct Wrap[T] { v: T }
+struct Wrap[T] {
+    v: T,
+}
 fn deep[T](x: T, n: Int) -> Int {
     if n == 0 {
         return 1
     }
-    let w = Wrap[T]{ v: x }
+    let w = Wrap[T]{v: x}
     return deep(w, n - 1)
 }
 fn main() {

@@ -394,7 +394,7 @@ static void emit_ins(FGen *fg, IrIns *in) {
         case IR_GLOBAL_ADDR: {
             int d = dstr(fg, in->dst, RAX);
             int at = mov_ri64_patch(d);
-            rel(at, 3, 0, 512 + in->target * 8);
+            rel(at, 3, 0, 8192 + in->target * 8);
             putr(fg, in->dst, d);
             break;
         }
@@ -672,6 +672,23 @@ static void emit_ins(FGen *fg, IrIns *in) {
                 if (r != sysregs[i]) mov_rr(sysregs[i], r);
             }
             syscall_();
+            if (target_os(g_target) == OS_MACOS) {
+                /* Two BSD conventions to reconcile.
+                   First, some calls return a second word in rdx: `fork` uses it
+                   to tell the child from the parent, and `pipe` returns both
+                   descriptors that way. There is nowhere in the language to put
+                   a second result, so it is parked in a fixed runtime slot that
+                   `core/sys` reads back. rdx and r11 are already dead here --
+                   the syscall instruction clobbers rcx and r11 itself.
+                   Second, failure is reported by the carry flag with a positive
+                   errno in rax, while every caller tests for a negative
+                   result. */
+                int aux = mov_ri64_patch(R11);
+                rel(aux, 3, 0, RT_SYSAUX);
+                rex(1, RDX, 0, R11); b1(0x89); modrm(0, RDX, R11);  /* mov [r11], rdx */
+                b1(0x73); b1(0x03);                 /* jnc +3 */
+                b1(0x48); b1(0xF7); b1(0xD8);       /* neg rax */
+            }
             if (in->dst >= 0) putr(fg, in->dst, RAX);
             break;
         }
@@ -718,6 +735,41 @@ static void emit_ins(FGen *fg, IrIns *in) {
                 int v = getr(fg, in->target2, RAX);
                 rex(1, v, RSI, RCX); b1(0x89); mem_idx(v, RCX, RSI, 16);
             }
+            break;
+        }
+        case IR_WINCALL: {
+            /* Microsoft x64: rcx, rdx, r8, r9, then the stack, and the caller
+               must reserve 32 bytes of shadow space the callee may scribble on.
+               Our virtual registers live in rbx and r12-r15, which are
+               callee-saved under this convention too, so nothing is at risk. */
+            static const int mregs[] = { RCX, RDX, R8, R9 };
+            int n = in->args.len;
+            int nstack = n > 4 ? n - 4 : 0;
+            int frame = 32 + nstack * 8;
+            if (frame & 15) frame += 8;
+            sub_ri(RSP, frame);
+            for (int i = n - 1; i >= 4; i--) {
+                int v = (int)(intptr_t)in->args.data[i];
+                int r = (f->vreg_float && v >= 0 && f->vreg_float[v]) ? RAX : getr(fg, v, RAX);
+                if (r == RAX && f->vreg_float && v >= 0 && f->vreg_float[v])
+                    load_rm(RAX, RBP, foff(fg, v), 8, 0);
+                store_rm(RSP, 32 + (i - 4) * 8, r, 8);
+            }
+            for (int i = (n < 4 ? n : 4) - 1; i >= 0; i--) {
+                int v = (int)(intptr_t)in->args.data[i];
+                int r;
+                if (f->vreg_float && v >= 0 && f->vreg_float[v]) {
+                    load_rm(RAX, RBP, foff(fg, v), 8, 0); r = RAX;
+                } else r = getr(fg, v, RAX);
+                mov_rr(mregs[i], r);
+            }
+            /* r10 holds the address of the import slot; the function pointer
+               is what lives *in* it, so this is an indirect call through it. */
+            int at = mov_ri64_patch(R10);
+            rel(at, 4, (int)in->imm, 0);
+            rex(0, 0, 0, R10); b1(0xFF); modrm(0, 2, R10);     /* call [r10] */
+            add_ri(RSP, frame);
+            if (in->dst >= 0) putr(fg, in->dst, RAX);
             break;
         }
         case IR_TRAP: ud2_(); break;
@@ -864,8 +916,55 @@ static FnInst *find_fn(const char *name) {
     return NULL;
 }
 
+/* A code-signing identifier. `codesign` uses the binary's own name, so this
+   mirrors that: the basename with any directory and extension removed. */
+const char *mach_ident(const char *path) {
+    static char buf[128];
+    const char *b = strrchr(path, '/');
+    b = b ? b + 1 : path;
+    size_t n = strlen(b);
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    memcpy(buf, b, n);
+    buf[n] = 0;
+    return buf;
+}
+
+static void emit_start_windows(int *start_off, FnInst *main_fn, FnInst *init_fn,
+                               FnInst *rt_init, FnInst *finish) {
+    *start_off = here();
+    /* Windows hands control to the entry point with an unaligned stack and no
+       argument vector; the runtime pulls the command line from kernel32. */
+    b1(0x48); b1(0x83); b1(0xE4); b1(0xF0);      /* and rsp, -16 */
+    /* Every Vela frame preserves rsp mod 16, and the Microsoft x64 ABI wants
+       rsp 16-byte aligned at the call, so the entry must hand over an aligned
+       stack. 32 bytes keeps the alignment and doubles as shadow space. */
+    sub_ri(RSP, 32);
+    int at = mov_ri64_patch(RCX); rel(at, 3, 0, 0);
+    store_rm(RCX, 0, RSP, 8);                    /* stack top, for the collector */
+    if (rt_init) { mov_ri(RDI, 0); b1(0xE8); { int a2 = here(); rel(a2, 0, rt_init->index, 0); b4(0); } }
+    if (init_fn) { mov_ri(RDI, 0); b1(0xE8); { int a2 = here(); rel(a2, 0, init_fn->index, 0); b4(0); } }
+    mov_ri(RDI, 0);
+    b1(0xE8); { int a2 = here(); rel(a2, 0, main_fn->index, 0); b4(0); }
+    if (finish) {
+        mov_rr(RSI, RAX);
+        mov_ri(RDI, 0);
+        b1(0xE8); { int a2 = here(); rel(a2, 0, finish->index, 0); b4(0); }
+    } else if (!main_fn->ret || main_fn->ret->kind != TY_INT) {
+        mov_ri(RAX, 0);
+    }
+    mov_rr(RCX, RAX);
+    sub_ri(RSP, 32);
+    { int a3 = mov_ri64_patch(R10); rel(a3, 4, 0, 0); }      /* ExitProcess */
+    rex(0, 0, 0, R10); b1(0xFF); modrm(0, 2, R10);
+    ud2_();
+}
+
 static void emit_start(int *start_off, FnInst *main_fn, FnInst *init_fn,
                        FnInst *rt_init, FnInst *finish) {
+    if (target_os(g_target) == OS_WINDOWS) {
+        emit_start_windows(start_off, main_fn, init_fn, rt_init, finish);
+        return;
+    }
     *start_off = here();
     /* record the stack base for the collector */
     int at = mov_ri64_patch(RCX); rel(at, 3, 0, 0);
@@ -896,12 +995,15 @@ static void emit_start(int *start_off, FnInst *main_fn, FnInst *init_fn,
         mov_ri(RAX, 0);
     }
     mov_rr(RDI, RAX);
-    mov_ri(RAX, 60);
+    /* Linux `exit_group`, or the BSD `exit` that macOS uses. */
+    mov_ri(RAX, target_os(g_target) == OS_MACOS ? 0x2000001 : 60);
     syscall_();
     ud2_();
 }
 
 void rodata_relocate(uint64_t base, uint64_t *fn_addrs, int nfn);
+
+uint32_t pe_iat_slot(int i);
 
 int codegen_x64(Unit *u, const char *outpath) {
     memset(&T, 0, sizeof T);
@@ -933,9 +1035,56 @@ int codegen_x64(Unit *u, const char *outpath) {
     /* --- layout --- */
     size_t text_size = T.len;
     size_t ro_off = (text_size + 15) & ~(size_t)15;
-    TEXT_VADDR = 0x400000 + 0x1000;
+    if (target_os(g_target) == OS_WINDOWS) {
+        size_t text_v = (ro_off + g_rodata.data.len + 0xFFF) & ~(size_t)0xFFF;
+        TEXT_VADDR = 0x140000000ULL + 0x1000;
+        RO_VADDR = TEXT_VADDR + ro_off;
+        uint64_t idata_rva = 0x1000 + text_v;
+        uint64_t idata_v = ((uint64_t)pe_idata_size() + 0xFFF) & ~(uint64_t)0xFFF;
+        DATA_VADDR = 0x140000000ULL + idata_rva + idata_v;
+        size_t rw = 8192 + (size_t)u->globals.len * 8;
+        for (int i = 0; i < u->fns.len; i++) {
+            FnInst *f = VEC_AT(&u->fns, FnInst, i);
+            fn_addr[i] = (f->code_off >= 0) ? TEXT_VADDR + (uint64_t)f->code_off : 0;
+        }
+        for (int i = 0; i < relocs.len; i++) {
+            Reloc *r = VEC_AT(&relocs, Reloc, i);
+            if (r->kind == 0) {
+                int tgt = r->target;
+                uint64_t dst;
+                if (tgt == -1000) { FnInst *g = find_fn("core.divzero"); dst = g ? fn_addr[g->index] : 0; }
+                else if (tgt == -1001) { FnInst *g = find_fn("core.oob1"); dst = g ? fn_addr[g->index] : 0; }
+                else if (tgt >= 0 && tgt < nfns) dst = fn_addr[tgt];
+                else dst = 0;
+                if (dst == 0) dst = TEXT_VADDR + (uint64_t)start_off;
+                int32_t d = (int32_t)((int64_t)dst - (int64_t)(TEXT_VADDR + (uint64_t)r->at + 4));
+                memcpy(T.data + r->at, &d, 4);
+            } else if (r->kind == 1) {
+                uint64_t v = (r->target >= 0 && r->target < nfns) ? fn_addr[r->target] : 0;
+                memcpy(T.data + r->at, &v, 8);
+            } else if (r->kind == 2) {
+                uint64_t v = RO_VADDR + (uint64_t)r->addend;
+                memcpy(T.data + r->at, &v, 8);
+            } else if (r->kind == 3) {
+                uint64_t v = DATA_VADDR + (uint64_t)r->addend;
+                memcpy(T.data + r->at, &v, 8);
+            } else {
+                /* kind 4: the address of an import address table slot */
+                uint64_t v = 0x140000000ULL + idata_rva + pe_iat_slot(r->target);
+                memcpy(T.data + r->at, &v, 8);
+            }
+        }
+        rodata_relocate(RO_VADDR, fn_addr, nfns);
+        return pe_write(&T, ro_off, rw, (uint32_t)(0x1000 + start_off),
+                        (uint32_t)idata_rva, outpath);
+    }
+    int mac = target_os(g_target) == OS_MACOS;
+    /* macOS keeps a 4 GiB unmapped guard at zero, so the image is based above
+       it; Linux has no such rule and stays at the traditional 0x400000. */
+    uint64_t img_base = mac ? 0x100000000ULL : 0x400000ULL;
+    TEXT_VADDR = img_base + 0x1000;
     RO_VADDR = TEXT_VADDR + ro_off;
-    size_t rw_size = 512 + (size_t)u->globals.len * 8;
+    size_t rw_size = 8192 + (size_t)u->globals.len * 8;
     size_t seg1_end = ro_off + g_rodata.data.len;
     DATA_VADDR = ((TEXT_VADDR + seg1_end + 0xFFF) & ~(uint64_t)0xFFF) + 0x1000;
 
@@ -987,6 +1136,20 @@ int codegen_x64(Unit *u, const char *outpath) {
     img.rw_size = rw_size;
     img.entry = TEXT_VADDR + (uint64_t)start_off;
     img.machine = 62;                     /* EM_X86_64 */
+    if (mac) {
+        MachImage m;
+        memset(&m, 0, sizeof m);
+        m.text = &T;
+        m.text_vaddr = TEXT_VADDR;
+        m.ro_off = ro_off;
+        m.data_vaddr = DATA_VADDR;
+        m.rw_size = rw_size;
+        m.entry = img.entry;
+        m.arm = 0;
+        m.page = 0x1000;
+        m.ident = mach_ident(outpath);
+        return macho_write(&m, outpath);
+    }
     return elf_write(&img, outpath);
 }
 

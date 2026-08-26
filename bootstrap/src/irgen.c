@@ -1196,9 +1196,12 @@ static int gen_builtin(Gen *g, Expr *e) {
 static int gen_intrinsic(Gen *g, Expr *e) {
     const char *n = e->name;
     int nargs = e->list.len;
-    int vals[8];
+    /* Wide enough for the largest intrinsic: `@winapi` fronts CreateProcessA,
+       which takes ten arguments plus the import index. */
+    int vals[17];
     int is_f2bits = (n == intern("f2bits") || n == intern("fsqrt"));
-    for (int i = 0; i < nargs && i < 8; i++) {
+    if (nargs > 17) nargs = 17;
+    for (int i = 0; i < nargs && i < 17; i++) {
         Expr *a = VEC_AT(&e->list, Expr, i);
         vals[i] = is_f2bits ? gen_expr(g, a) : gen_word(g, a);
     }
@@ -1252,6 +1255,22 @@ static int gen_intrinsic(Gen *g, Expr *e) {
     }
     if (n == intern("f2bits")) return bitcast_f2i(g, vals[0]);
     if (n == intern("bits2f")) return bitcast_i2f(g, vals[0]);
+    if (n == intern("winapi")) {
+        IrIns *i = g_ins(g, IR_WINCALL);
+        i->imm = 0;
+        if (nargs > 0) {
+            Expr *a0 = VEC_AT(&e->list, Expr, 0);
+            if (a0->kind == E_INT) i->imm = a0->ival;
+            else if (a0->kind == E_IDENT && a0->sym &&
+                     ((Sym *)a0->sym)->decl && ((Sym *)a0->sym)->decl->cfold == 1)
+                i->imm = ((Sym *)a0->sym)->decl->cfold_i;
+        }
+        /* CreateProcessA takes ten; the lowering spills past the fourth. */
+        for (int k = 1; k < nargs && k < 17; k++)
+            vec_push(&i->args, (void *)(intptr_t)vals[k]);
+        i->dst = new_vreg(g, 0);
+        return i->dst;
+    }
     if (n == intern("trap")) { g_ins(g, IR_TRAP); return emit_const(g, 0); }
     return emit_const(g, 0);
 }

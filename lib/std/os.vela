@@ -13,6 +13,9 @@ fn cstr_len(p: Int) -> Int {
 
 /// The command-line arguments, including the program name at index 0.
 pub fn args() -> [Str] {
+    if core.arch() == "windows-x64" {
+        return split_command_line(core.str_from(sys.command_line(), cstr_len(sys.command_line())))
+    }
     let n = @argc()
     let v = @argv()
     let out: [Str] = []
@@ -23,9 +26,50 @@ pub fn args() -> [Str] {
     return out
 }
 
+/// Windows hands over one command-line string; split it the way the C runtime
+/// does, honouring double quotes.
+fn split_command_line(line: Str) -> [Str] {
+    let out: [Str] = []
+    let b = buf()
+    let mut quoted = false
+    let mut any = false
+    for c in line {
+        if c == '"' {
+            quoted = not quoted
+            any = true
+        } else if (c == ' ' or c == '\t') and not quoted {
+            if any {
+                out.push(b.str())
+                b.clear()
+                any = false
+            }
+        } else {
+            b.push_byte(c)
+            any = true
+        }
+    }
+    if any {
+        out.push(b.str())
+    }
+    return out
+}
+
 /// The environment as a map.
-pub fn env() -> {Str: Str } {
-    let out: {Str: Str } = {:}
+pub fn env() -> {Str: Str} {
+    let out: {Str: Str} = {:}
+    if core.arch() == "windows-x64" {
+        let mut p = sys.environ_block()
+        while @load8(p) != 0 {
+            let l = cstr_len(p)
+            let s = core.str_from(p, l)
+            let eq = s.index_of("=")
+            if eq > 0 {
+                out[s[0..eq]] = s[eq + 1..len(s)]
+            }
+            p += l + 1
+        }
+        return out
+    }
     let e = @envp()
     let mut i = 0
     while true {
@@ -45,6 +89,9 @@ pub fn env() -> {Str: Str } {
 
 /// The value of an environment variable.
 pub fn getenv(name: Str) -> ?Str {
+    if core.arch() == "windows-x64" {
+        return env()[name]
+    }
     let e = @envp()
     let mut i = 0
     let prefix = name + "="
@@ -70,7 +117,7 @@ pub fn exit(code: Int) {
 /// The current working directory.
 pub fn cwd() -> Str {
     let p = core.str_alloc(4096)
-    let r = @syscall(sys.SYS_GETCWD, p + 16, 4096)
+    let r = sys.getcwd(p + 16, 4096)
     if r <= 0 {
         return "."
     }
@@ -83,7 +130,7 @@ pub fn chdir(path: Str) -> !Void {
     let p = core.str_alloc(len(path) + 1)
     core.mcopy(p + 16, @addr(path) + 16, len(path))
     @store8(p + 16 + len(path), 0)
-    if @syscall(sys.SYS_CHDIR, p + 16) != 0 {
+    if sys.chdir(p + 16) != 0 {
         return err("cannot chdir to '{path}'")
     }
     return ok(void)
@@ -91,11 +138,42 @@ pub fn chdir(path: Str) -> !Void {
 
 /// The process identifier.
 pub fn pid() -> Int {
-    return @syscall(sys.SYS_GETPID)
+    return sys.getpid()
+}
+
+/// A directory for temporary files, honouring `TMPDIR` / `TEMP` / `TMP`.
+pub fn temp_dir() -> Str {
+    if let d = getenv("TMPDIR") {
+        return d
+    }
+    if let d = getenv("TEMP") {
+        return d
+    }
+    if let d = getenv("TMP") {
+        return d
+    }
+    if core.arch() == "windows-x64" {
+        return "C:/Windows/Temp"
+    }
+    return "/tmp"
+}
+
+/// A path in `temp_dir()` that no other process is using.
+pub fn temp_file(prefix: Str) -> Str {
+    return temp_dir() + "/" + prefix + str(pid())
 }
 
 /// The absolute path of the running executable.
 pub fn exe_path() -> Str {
+    if core.arch() == "windows-x64" {
+        let p = core.str_alloc(4096)
+        let n = sys.readlink(0, @addr(p) + 16, 4096)
+        if n <= 0 {
+            return args()[0]
+        }
+        @store64(@addr(p) + 8, n)
+        return @ref[Str](p)
+    }
     let p = core.str_alloc(4096)
     let link = "/proc/self/exe"
     let c = core.str_alloc(len(link) + 1)
@@ -111,8 +189,7 @@ pub fn exe_path() -> Str {
 
 /// True when `fd` is a terminal. Used to decide whether to colour output.
 pub fn is_tty(fd: Int) -> Bool {
-    let buf = core.alloc(80, 0)
-    return @syscall(sys.SYS_IOCTL, fd, 0x5401, buf + 16) == 0
+    return sys.is_tty(fd)
 }
 
 /// True when output should be coloured: a terminal, and `NO_COLOR` is unset.
@@ -125,8 +202,5 @@ pub fn use_color(fd: Int) -> Bool {
 
 /// Sleep for `ms` milliseconds.
 pub fn sleep_ms(ms: Int) {
-    let ts = core.alloc(32, 0)
-    @store64(ts + 16, ms / 1000)
-    @store64(ts + 24, (ms % 1000) * 1000000)
-    @syscall(sys.SYS_NANOSLEEP, ts + 16, 0)
+    sys.sleep_ms(ms)
 }

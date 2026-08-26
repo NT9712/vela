@@ -9,7 +9,7 @@ fn fib(n: Int) -> Int {
 }
 fn main() {
     let argv = os.args()
-    let n = if len(argv) > 1{argv[1].to_int() ?? 32 } else {32 }
+    let n = if len(argv) > 1{argv[1].to_int() ?? 32} else {32}
     let t0 = time.mono_ns()
     let v = fib(n)
     let el = time.mono_ns() - t0

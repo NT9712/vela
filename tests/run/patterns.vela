@@ -26,7 +26,7 @@ fn main() {
     println(res(ok(5)))
     println(res(err("oops")))
     let p = Point{ x: 1, y: 2 }
-    println(match p{Point{ x: a, y: b } => "struct {a} {b}" })
+    println(match p{ Point{ x: a, y: b } => "struct {a} {b}" })
 }
 struct Point {
     x: Int,

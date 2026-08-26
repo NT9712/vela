@@ -3,12 +3,6 @@
 use core
 use core/sys
 
-const O_RDONLY: Int = 0
-const O_WRONLY: Int = 1
-const O_CREAT: Int = 64
-const O_TRUNC: Int = 512
-const O_APPEND: Int = 1024
-
 fn cstr(s: Str) -> Int {
     let p = core.str_alloc(len(s) + 1)
     core.mcopy(p + 16, @addr(s) + 16, len(s))
@@ -24,7 +18,7 @@ pub struct File {
 
 /// Open `path` for reading.
 pub fn open(path: Str) -> !File {
-    let fd = sys.open(cstr(path), O_RDONLY, 0)
+    let fd = sys.open(cstr(path), sys.O_RDONLY, 0)
     if fd < 0 {
         return err_code("cannot open '{path}': {errname(-fd)}", -fd)
     }
@@ -33,7 +27,7 @@ pub fn open(path: Str) -> !File {
 
 /// Create or truncate `path` for writing.
 pub fn create(path: Str) -> !File {
-    let fd = sys.open(cstr(path), O_WRONLY | O_CREAT | O_TRUNC, 420)
+    let fd = sys.open(cstr(path), sys.O_WRONLY | sys.O_CREAT | sys.O_TRUNC, 420)
     if fd < 0 {
         return err_code("cannot create '{path}': {errname(-fd)}", -fd)
     }
@@ -42,7 +36,7 @@ pub fn create(path: Str) -> !File {
 
 /// Open `path` for appending, creating it when absent.
 pub fn append(path: Str) -> !File {
-    let fd = sys.open(cstr(path), O_WRONLY | O_CREAT | O_APPEND, 420)
+    let fd = sys.open(cstr(path), sys.O_WRONLY | sys.O_CREAT | sys.O_APPEND, 420)
     if fd < 0 {
         return err_code("cannot open '{path}': {errname(-fd)}", -fd)
     }
@@ -143,7 +137,7 @@ pub fn is_dir(path: Str) -> Bool {
     if sys.stat(cstr(path), buf) != 0 {
         return false
     }
-    return (@load32(buf + sys.STAT_MODE_OFF) & 61440) == 16384
+    return sys.mode_is_dir(@load64(buf + sys.STAT_MODE_OFF))
 }
 
 /// True when `path` is a regular file.
@@ -152,7 +146,7 @@ pub fn is_file(path: Str) -> Bool {
     if sys.stat(cstr(path), buf) != 0 {
         return false
     }
-    return (@load32(buf + sys.STAT_MODE_OFF) & 61440) == 32768
+    return sys.mode_is_file(@load64(buf + sys.STAT_MODE_OFF))
 }
 
 /// Delete a file.
@@ -210,23 +204,27 @@ pub fn rename(from: Str, to: Str) -> !Void {
 
 /// Entries of a directory, excluding `.` and `..`.
 pub fn read_dir(path: Str) -> ![Str] {
-    let fd = sys.open(cstr(path), 65536 | O_RDONLY, 0)
-    if fd < 0 {
+    let h = sys.dir_open(cstr(path))
+    if h < 0 {
         return err("cannot open directory '{path}'")
     }
     let out: [Str] = []
     let bufsz = 32768
     let buf = core.alloc(bufsz + 16, 0) + 16
     while true {
-        let n = @syscall(sys.SYS_GETDENTS64, fd, buf, bufsz)
+        let n = sys.dir_read(h, buf, bufsz)
         if n <= 0 {
-            sys.close(fd)
+            sys.dir_close(h)
             return ok(out)
         }
         let mut off = 0
         while off < n {
-            let reclen = @load16(buf + off + 16)
-            let namep = buf + off + 19
+            let reclen = sys.dirent_reclen(buf + off)
+            if reclen <= 0 {
+                off = n
+                continue
+            }
+            let namep = sys.dirent_name(buf + off)
             let mut l = 0
             while @load8(namep + l) != 0 {
                 l += 1
@@ -238,7 +236,7 @@ pub fn read_dir(path: Str) -> ![Str] {
             off += reclen
         }
     }
-    sys.close(fd)
+    sys.dir_close(h)
     return ok(out)
 }
 

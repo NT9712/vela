@@ -17,7 +17,7 @@
 #include "vela.h"
 
 enum { X0=0, X1=1, X2=2, X3=3, X4=4, X5=5, X6=6, X7=7, X8=8,
-       X9=9, X10=10, X11=11, X12=12, X13=13,
+       X9=9, X10=10, X11=11, X12=12, X13=13, X16=16,
        X19=19, X20=20, X21=21, X22=22, X23=23, X24=24, X25=25, X26=26, X27=27, X28=28,
        X29=29, X30=30, XZR=31, SP=31 };
 
@@ -215,7 +215,12 @@ static void cset(int d, int cc) {
     w(0x9A9F07E0u | ((uint32_t)(cc ^ 1) << 12) | (uint32_t)d);
 }
 static void ret_(void) { w(0xD65F03C0u); }
-static void svc0(void) { w(0xD4000001u); }
+/* `svc #0` on Linux, `svc #0x80` on Darwin. The kernel reads the number from a
+   register either way, but every Darwin binary uses 0x80 and matching the
+   platform convention costs nothing. */
+static void svc0(void) {
+    w(target_os(g_target) == OS_MACOS ? 0xD4001001u : 0xD4000001u);
+}
 static void brk_(void) { w(0xD4200000u); }
 static void blr_(int r) { w(0xD63F0000u | ((uint32_t)r << 5)); }
 
@@ -441,7 +446,7 @@ static void emit_ins(FGen *fg, IrIns *in) {
         }
         case IR_GLOBAL_ADDR: {
             int d = dstr(fg, in->dst, SCR0);
-            rel(mov_imm64_patch(d), 3, d, 512 + in->target * 8);
+            rel(mov_imm64_patch(d), 3, d, 8192 + in->target * 8);
             putr(fg, in->dst, d);
             break;
         }
@@ -687,8 +692,12 @@ static void emit_ins(FGen *fg, IrIns *in) {
             break;
         }
         case IR_SYSCALL: {
-            /* x8 holds the number; x0-x5 hold the arguments */
-            static const int sysregs[] = { X8, X0, X1, X2, X3, X4, X5 };
+            /* x8 holds the number on Linux, x16 on Darwin; x0-x5 hold the
+               arguments on both. */
+            static const int sysregs_linux[] = { X8, X0, X1, X2, X3, X4, X5 };
+            static const int sysregs_mac[]   = { X16, X0, X1, X2, X3, X4, X5 };
+            const int *sysregs = target_os(g_target) == OS_MACOS
+                               ? sysregs_mac : sysregs_linux;
             int n = in->args.len;
             if (n > 7) n = 7;
             for (int i = n - 1; i >= 0; i--) {
@@ -697,6 +706,14 @@ static void emit_ins(FGen *fg, IrIns *in) {
                 if (r != sysregs[i]) mov_rr(sysregs[i], r);
             }
             svc0();
+            if (target_os(g_target) == OS_MACOS) {
+                /* See the x86-64 backend: BSD returns a second word (in x1
+                   here) and signals failure with the carry flag. */
+                rel(mov_imm64_patch(SCR1), 3, SCR1, RT_SYSAUX);
+                str64(X1, SCR1, 0);
+                w(0x54000043);        /* b.cc +2 instructions */
+                w(0xCB0003E0);        /* neg x0, x0 */
+            }
             if (in->dst >= 0) putr(fg, in->dst, X0);
             break;
         }
@@ -919,7 +936,10 @@ static void emit_start(int *start_off, FnInst *main_fn, FnInst *init_fn,
     } else if (!main_fn->ret || main_fn->ret->kind != TY_INT) {
         mov_rr(X0, XZR);
     }
-    mov_imm(X8, 94);                     /* exit_group */
+    /* Linux `exit_group`, or the BSD `exit` that macOS uses. On Darwin the
+       number goes in x16 rather than x8. */
+    if (target_os(g_target) == OS_MACOS) mov_imm(X16, 1);
+    else mov_imm(X8, 94);
     svc0();
     brk_();
 }
@@ -953,11 +973,16 @@ int codegen_arm64(Unit *u, const char *outpath) {
 
     size_t text_size = T.len;
     size_t ro_off = (text_size + 15) & ~(size_t)15;
-    TEXT_VADDR = 0x400000 + 0x1000;
+    /* macOS keeps a 4 GiB unmapped guard at zero and, on arm64, insists on
+       16 KiB segment alignment. Linux has neither rule. */
+    int mac = target_os(g_target) == OS_MACOS;
+    uint64_t page = mac ? 0x4000 : 0x1000;
+    uint64_t img_base = mac ? 0x100000000ULL : 0x400000ULL;
+    TEXT_VADDR = img_base + page;
     RO_VADDR = TEXT_VADDR + ro_off;
-    size_t rw_size = 512 + (size_t)u->globals.len * 8;
+    size_t rw_size = 8192 + (size_t)u->globals.len * 8;
     size_t seg1_end = ro_off + g_rodata.data.len;
-    DATA_VADDR = ((TEXT_VADDR + seg1_end + 0xFFF) & ~(uint64_t)0xFFF) + 0x1000;
+    DATA_VADDR = ((TEXT_VADDR + seg1_end + page - 1) & ~(page - 1)) + page;
 
     for (int i = 0; i < u->fns.len; i++) {
         FnInst *f = VEC_AT(&u->fns, FnInst, i);
@@ -987,6 +1012,21 @@ int codegen_arm64(Unit *u, const char *outpath) {
     }
     rodata_relocate(RO_VADDR, fn_addr, nfns);
 
+    if (mac) {
+        MachImage m;
+        memset(&m, 0, sizeof m);
+        m.text = &T;
+        m.text_vaddr = TEXT_VADDR;
+        m.ro_off = ro_off;
+        m.data_vaddr = DATA_VADDR;
+        m.rw_size = rw_size;
+        m.entry = TEXT_VADDR + (uint64_t)start_off;
+        m.arm = 1;
+        m.page = page;
+        m.ident = mach_ident(outpath);
+        return macho_write(&m, outpath);
+    }
+
     ElfImage img;
     memset(&img, 0, sizeof img);
     img.text = &T;
@@ -1003,6 +1043,7 @@ int codegen_arm64(Unit *u, const char *outpath) {
 int codegen_x64(Unit *u, const char *outpath);
 
 int codegen_run(Unit *u, const char *outpath) {
-    if (g_target == TARGET_ARM64) return codegen_arm64(u, outpath);
+    if (g_target == TARGET_ARM64 || g_target == TARGET_MACOS_ARM64)
+        return codegen_arm64(u, outpath);
     return codegen_x64(u, outpath);
 }

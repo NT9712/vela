@@ -5,6 +5,7 @@
 
 use std/fs
 use std/json
+use std/os
 
 /// One task.
 pub struct Task {
@@ -65,14 +66,14 @@ pub fn Store.save(self) -> !Void {
         for g in t.tags {
             tags.push(json.Json.Str(g))
         }
-        let m: {Str: json.Json } = {:}
+        let m: {Str: json.Json} = {:}
         m["id"] = json.Json.Num(float(t.id))
         m["title"] = json.Json.Str(t.title)
         m["done"] = json.Json.Bool(t.done)
         m["tags"] = json.Json.List(tags)
         items.push(json.Json.Obj(m))
     }
-    let root: {Str: json.Json } = {:}
+    let root: {Str: json.Json} = {:}
     root["tasks"] = json.Json.List(items)
     fs.write_file(self.path, json.Json.Obj(root).pretty() + "\n")?
     return ok(void)
@@ -137,7 +138,7 @@ test "add, complete and remove" {
 }
 
 test "round trip through json" {
-    let p = "/tmp/vela-todo-test.json"
+    let p = os.temp_file("vela-todo-") + ".json"
     let s = Store{ path: p, tasks: [], next_id: 1 }
     s.add("alpha", ["x", "y"])
     s.add("beta", [])

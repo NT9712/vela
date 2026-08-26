@@ -218,7 +218,8 @@ static void usage(FILE *o) {
 "  --test           compile `test` blocks into a test binary\n"
 "  --emit-ir        print the optimised Vela IR to stdout\n"
 "  --emit-tokens    print the token stream of the entry module\n"
-"  --target <arch>  x86_64 (default on x86-64) or arm64\n"
+"  --target <t>     x86_64, arm64, windows-x64, macos-x64, macos-arm64\n"
+"                   (defaults to the host)\n"
 "  --root <dir>     location of the Vela installation (lib/, tools/)\n"
 "  --dep <dir>      add a dependency search root (repeatable)\n"
 "  --no-color       disable coloured diagnostics\n"
@@ -272,7 +273,17 @@ static void discover_root(const char *argv0) {
 
 int main(int argc, char **argv) {
     const char *input = NULL;
-#if defined(__aarch64__)
+    /* Default to whatever the compiler is running on, so a plain `velac`
+       invocation produces a binary the host can execute. */
+#if defined(__APPLE__)
+  #if defined(__aarch64__)
+    g_target = TARGET_MACOS_ARM64;
+  #else
+    g_target = TARGET_MACOS_X64;
+  #endif
+#elif defined(_WIN32)
+    g_target = TARGET_WINDOWS_X64;
+#elif defined(__aarch64__)
     g_target = TARGET_ARM64;
 #else
     g_target = TARGET_X86_64;

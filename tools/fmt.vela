@@ -27,12 +27,13 @@ struct F {
     pending_blank: Bool,
     prev: Str,
     cont: Int,
+    padded: [Bool],
 }
 
 /// Format Vela source text.
 pub fn format(src: Str) -> !Str {
     let toks = lex.tokenize(src)?
-    let f = F{ toks: toks, i: 0, out: core.buf_with(len(src) + len(src) / 4), line: "", indent: 0, pending_blank: false, prev: "", cont: 0 }
+    let f = F{ toks: toks, i: 0, out: core.buf_with(len(src) + len(src) / 4), line: "", indent: 0, pending_blank: false, prev: "", cont: 0, padded: [] }
     f.skip_newlines_leading()
     while not f.at_eof() {
         f.decl()
@@ -708,16 +709,24 @@ fn F.expr_token(self, _depth: Int) {
         }
         self.emit("{{")
         // `Point{ x: 1 }` reads better than `Point{x: 1}`; map *types* like
-        // `{Str: Int}` stay tight.
+        // `{Str: Int}` stay tight. Whichever it is, the closing brace must
+        // match, so the decision is remembered on a stack.
         let nx = self.cur()
-        if not nx.is_punct("}}") and not nx.is_punct(":") and not is_type_brace_content(self.toks, self.i) {
+        let pad = not nx.is_punct("}}") and not nx.is_punct(":") and
+            not is_type_brace_content(self.toks, self.i)
+        self.padded.push(pad)
+        if pad {
             self.emit_space()
         }
         return
     }
     if t.is_punct("}}") {
         self.line = rstrip(self.line)
-        if not self.line.ends_with("{{") and not self.line.ends_with(":") {
+        let mut pad = true
+        if len(self.padded) > 0 {
+            pad = self.padded.pop()
+        }
+        if pad and not self.line.ends_with("{{") and not self.line.ends_with(":") {
             self.emit_space()
         }
         self.emit("}}")
@@ -819,7 +828,9 @@ fn is_type_brace_content(toks: [lex.Token], i: Int) -> Bool {
             depth -= 1
         } else if t.is_punct("]") or t.is_punct(")") {
             depth -= 1
-        } else if depth == 0 and (t.is_punct(",") or t.is_punct("=")) {
+        } else if depth == 0 and (t.is_punct(",") or t.is_punct("=") or t.is_punct("=>")) {
+            // A comma or an assignment means a struct literal; a `=>` means a
+            // single-line `match` body. None of those is a map type.
             return false
         }
         j += 1

@@ -2091,6 +2091,11 @@ static Type *check_expr(Expr *e, Type *want) {
                 r = ty_float;
             }
             else if (n == intern("trap")) r = ty_void;
+            else if (n == intern("winapi")) {
+                if (e->list.len == 0)
+                    serr(e->span, "`@winapi` needs an import index as its first argument");
+                r = ty_int;
+            }
             else { serr(e->span, "unknown intrinsic `@%s`", n); r = ty_int; }
             break;
         }

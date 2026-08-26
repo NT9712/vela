@@ -268,6 +268,92 @@ PY
   }
 }
 
+windows_tests() {
+  echo "cross compilation (windows-x64)"
+  local WINE
+  WINE="$(command -v wine64 || command -v wine || true)"
+  local n=0
+  for f in "$ROOT"/tests/run/*.vela; do
+    local name; name="$(basename "$f" .vela)"
+    "$VELAC" -q --no-color --target windows -o "$TMP/w-$name.exe" "$f" 2>"$TMP/w.err" || {
+      bad "windows compile $name" "$(head -6 "$TMP/w.err")"; return; }
+    # verify the PE structurally: signature, machine, subsystem, imports
+    python3 "$ROOT/tests/pecheck.py" "$TMP/w-$name.exe" >/dev/null || {
+      bad "windows PE structure $name" "malformed"; return; }
+    n=$((n+1))
+  done
+  ok "$n programs cross-compiled to valid PE32+"
+
+  if [ -z "$WINE" ]; then
+    skip "windows execution" "wine not installed"
+    return
+  fi
+  export WINEDEBUG=-all
+  export WINEPREFIX="${WINEPREFIX:-$HOME/.winep}"
+  local bad_any=0
+  for f in "$ROOT"/tests/run/*.vela; do
+    local name; name="$(basename "$f" .vela)"
+    local expected actual
+    expected="$(awk '/^\/\/ EXPECT:/{flag=1;next} /^\/\//{if(flag){sub(/^\/\/ ?/,"");print;next}} {if(flag)exit}' "$f")"
+    actual="$(cd "$HOME" && timeout 180 "$WINE" "$TMP/w-$name.exe" 2>/dev/null)"
+    if [ "$actual" != "$expected" ]; then
+      bad "windows run $name" "$(diff <(echo "$expected") <(echo "$actual") | head -8)"; bad_any=1
+    fi
+  done
+  [ $bad_any -eq 0 ] && ok "all golden programs produce identical output on Windows"
+
+  "$VELAC" -q --no-color --target windows --test -o "$TMP/w-lib.exe" "$ROOT/tests/lib/stdlib.vela" 2>/dev/null && {
+    local out; out="$(cd "$HOME" && timeout 900 "$WINE" "$TMP/w-lib.exe" 2>/dev/null | tail -1)"
+    case "$out" in *"0 failed"*) ok "windows stdlib: $out";; *) bad "windows stdlib" "$out";; esac
+  }
+  "$VELAC" -q --no-color --target windows -o "$TMP/w-vela.exe" "$ROOT/tools/cli.vela" 2>/dev/null && {
+    local v; v="$(cd "$HOME" && timeout 180 "$WINE" "$TMP/w-vela.exe" version 2>/dev/null)"
+    case "$v" in *"windows"*) ok "windows toolchain runs: $v";; *) bad "windows toolchain" "$v";; esac
+  }
+}
+
+macos_tests() {
+  echo "cross compilation (macos)"
+  local host_mac=0
+  [ "$(uname -s)" = "Darwin" ] && host_mac=1
+  for target in macos-x64 macos-arm64; do
+    local n=0
+    for f in "$ROOT"/tests/run/*.vela; do
+      local name; name="$(basename "$f" .vela)"
+      "$VELAC" -q --no-color --target "$target" -o "$TMP/m-$target-$name" "$f" 2>"$TMP/m.err" || {
+        bad "$target compile $name" "$(head -6 "$TMP/m.err")"; return; }
+      # re-parse the image and re-verify every code-signing page hash
+      python3 "$ROOT/tests/machocheck.py" "$TMP/m-$target-$name" >/dev/null || {
+        bad "$target Mach-O structure $name" "malformed"; return; }
+      n=$((n+1))
+    done
+    ok "$n programs cross-compiled to valid Mach-O ($target)"
+  done
+
+  if [ $host_mac -eq 0 ]; then
+    skip "macos execution" "not running on macOS; CI covers this on real hardware"
+    return
+  fi
+  local native; native="macos-x64"
+  [ "$(uname -m)" = "arm64" ] && native="macos-arm64"
+  local bad_any=0
+  for f in "$ROOT"/tests/run/*.vela; do
+    local name; name="$(basename "$f" .vela)"
+    local expected actual
+    expected="$(awk '/^\/\/ EXPECT:/{flag=1;next} /^\/\//{if(flag){sub(/^\/\/ ?/,"");print;next}} {if(flag)exit}' "$f")"
+    actual="$(timeout 120 "$TMP/m-$native-$name" 2>&1)"
+    if [ "$actual" != "$expected" ]; then
+      bad "macos run $name" "$(diff <(echo "$expected") <(echo "$actual") | head -8)"; bad_any=1
+    fi
+  done
+  [ $bad_any -eq 0 ] && ok "all golden programs produce identical output on macOS"
+
+  "$VELAC" -q --no-color --target "$native" --test -o "$TMP/m-lib" "$ROOT/tests/lib/stdlib.vela" 2>/dev/null && {
+    local out; out="$(timeout 600 "$TMP/m-lib" 2>&1 | tail -1)"
+    case "$out" in *"0 failed"*) ok "macos stdlib: $out";; *) bad "macos stdlib" "$out";; esac
+  }
+}
+
 site_tests() {
   echo "documentation site"
   "$VELAC" -q --no-color -o "$TMP/sitebuild" "$ROOT/site/build.vela" 2>"$TMP/sb.err" \
@@ -425,6 +511,8 @@ case "$what" in
   dist) dist_tests ;;
   site) site_tests ;;
   cross) cross_tests ;;
+  windows) windows_tests ;;
+  macos) macos_tests ;;
   fail) fail_tests ;;
   unit) unit_tests ;;
   cli)  cli_tests ;;
@@ -432,7 +520,7 @@ case "$what" in
   fmt)  fmt_tests ;;
   selfcheck) selfcheck_tests ;;
   fuzz) fuzz_tests ;;
-  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; cross_tests; site_tests; dist_tests; regress_tests; fuzz_tests ;;
+  *)    run_tests; fail_tests; unit_tests; selfcheck_tests; fmt_tests; cli_tests; lsp_tests; cross_tests; windows_tests; macos_tests; site_tests; dist_tests; regress_tests; fuzz_tests ;;
 esac
 
 echo

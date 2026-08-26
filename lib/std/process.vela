@@ -40,24 +40,14 @@ pub fn run(args: [Str]) -> !Output {
     if sys.pipe(errp) != 0 {
         return err("cannot create pipe")
     }
-    let out_r = @load32(outp)
-    let out_w = @load32(outp + 4)
-    let err_r = @load32(errp)
-    let err_w = @load32(errp + 4)
+    let out_r = @load64(outp)
+    let out_w = @load64(outp + 8)
+    let err_r = @load64(errp)
+    let err_w = @load64(errp + 8)
 
-    let pid = sys.fork()
+    let pid = sys.spawn(cstr(args[0]), argv_block(args), @envp(), out_w, err_w)
     if pid < 0 {
-        return err("fork failed")
-    }
-    if pid == 0 {
-        sys.close(out_r)
-        sys.close(err_r)
-        sys.dup2(out_w, 1)
-        sys.dup2(err_w, 2)
-        sys.close(out_w)
-        sys.close(err_w)
-        @syscall(sys.SYS_EXECVE, cstr(args[0]), argv_block(args), @envp())
-        core.exit(127)
+        return err("cannot start '{args[0]}'")
     }
     sys.close(out_w)
     sys.close(err_w)
@@ -65,14 +55,7 @@ pub fn run(args: [Str]) -> !Output {
     let se = drain(err_r)
     sys.close(out_r)
     sys.close(err_r)
-    let stat = core.alloc(32, 0) + 16
-    @syscall(sys.SYS_WAIT4, pid, stat, 0, 0)
-    let raw = @load32(stat)
-    let mut code = (raw >> 8) & 255
-    if raw & 127 != 0 {
-        code = 128 + (raw & 127)
-    }
-    return ok(Output{ status: code, stdout: so, stderr: se })
+    return ok(Output{ status: sys.wait_pid(pid), stdout: so, stderr: se })
 }
 
 fn drain(fd: Int) -> Str {
@@ -94,22 +77,11 @@ pub fn spawn(args: [Str]) -> !Int {
     if len(args) == 0 {
         return err("process.spawn needs at least a program name")
     }
-    let pid = sys.fork()
+    let pid = sys.spawn(cstr(args[0]), argv_block(args), @envp(), -1, -1)
     if pid < 0 {
-        return err("fork failed")
+        return err("cannot start '{args[0]}'")
     }
-    if pid == 0 {
-        @syscall(sys.SYS_EXECVE, cstr(args[0]), argv_block(args), @envp())
-        core.exit(127)
-    }
-    let stat = core.alloc(32, 0) + 16
-    @syscall(sys.SYS_WAIT4, pid, stat, 0, 0)
-    let raw = @load32(stat)
-    let mut code = (raw >> 8) & 255
-    if raw & 127 != 0 {
-        code = 128 + (raw & 127)
-    }
-    return ok(code)
+    return ok(sys.wait_pid(pid))
 }
 
 /// Look `name` up on PATH. Returns the absolute path, or nil.
@@ -157,7 +129,7 @@ fn env_path() -> Str {
 
 /// Send a signal to a process.
 pub fn kill(pid: Int, sig: Int) -> !Void {
-    if @syscall(sys.SYS_KILL, pid, sig) != 0 {
+    if sys.kill(pid, sig) != 0 {
         return err("cannot signal process {pid}")
     }
     return ok(void)

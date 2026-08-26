@@ -176,7 +176,7 @@ test "time" {
 }
 
 test "filesystem" {
-    let p = "/tmp/vela-selftest-{os.pid()}.txt"
+    let p = os.temp_file("vela-selftest-") + ".txt"
     fs.write_file(p, "one\ntwo\n") ?? panic("write failed")
     assert(fs.exists(p))
     assert_eq(fs.size(p) ?? 0, 8)

@@ -11,7 +11,7 @@ struct P {
     b: Str,
 }
 struct Q {
-    m: {Str: Int },
+    m: {Str: Int},
 }
 struct R {
     l: [Int],
@@ -30,9 +30,9 @@ fn main() {
     let p = P{ a: 1, b: "x" }
     let p2 = P{ a: 1, b: "x" }
     println("{p == p} {p == p2} {p == P{ a: 2, b: "x" }}")
-    let q = Q{m: {"k": 1 } }
+    let q = Q{m: {"k": 1}}
     println("q: {q == q} {q == Q{ m: { "k": 2 } }}")
-    let r = R{l: [1, 2] }
+    let r = R{l: [1, 2]}
     println("r: {r == r} {r == R{ l: [1, 3] }}")
     let n = N{ p: p, r: r }
     println("nested: {n == N{ p: p2, r: R{ l: [1, 2] }}} {n == N{ p: p2, r: R{ l: [9] }}}")

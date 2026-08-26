@@ -208,8 +208,10 @@ velac --check main.vela      type-check
 velac --emit-ir main.vela    print the optimised IR
 velac --emit-tokens f.vela   print the token stream
 velac --time main.vela       per-phase timings
-velac --target arm64 ...     cross-compile; there is no cross linker to install
+velac --target ...           x86_64, arm64, windows-x64, macos-x64, macos-arm64
 ```
+Cross-compiling needs nothing beyond the compiler: there is no linker, no libc
+and no runtime to install for any target.
 
 ## Targets
 
@@ -217,19 +219,31 @@ velac --target arm64 ...     cross-compile; there is no cross linker to install
 |--------|--------|
 | `x86_64` Linux | fully supported, the default on x86-64 hosts |
 | `arm64` Linux (AArch64) | fully supported, the default on ARM64 hosts |
+| `windows-x64` Windows 10+ | fully supported; verified under wine and on CI's Windows runners |
+| `macos-x64` Intel Macs | fully supported; executed on CI's macOS runners |
+| `macos-arm64` Apple Silicon | fully supported, with an ad-hoc code signature baked in; executed on CI's Apple Silicon runners |
 
 Cross-compiling needs nothing beyond the compiler, because `velac` encodes the
-instructions and writes the ELF itself:
+instructions and writes the container itself — ELF, PE or Mach-O:
 
 ```console
-$ vela build --target arm64        # from an x86-64 machine
+$ vela build --target arm64          # from any host
 $ file build/hello-arm64
 build/hello-arm64: ELF 64-bit LSB executable, ARM aarch64, statically linked
+$ vela build --target windows-x64    # also from any host
+$ vela build                         # on a Mac: a signed Mach-O, no tooling needed
 ```
 
-The test suite cross-compiles every golden program and, when `qemu-aarch64` is
-installed, runs them and compares the output byte for byte against the x86-64
-run.
+Every platform runs the same standard library over one small `core/sys`
+interface, so behaviour — including program output — is identical everywhere.
+See [`docs/platforms.md`](docs/platforms.md) for how each target works, what is
+verified and how.
+
+The test suite cross-compiles every golden program for every target, validates
+the binaries with independent parsers (`tests/pecheck.py`,
+`tests/machocheck.py`), executes them under `qemu-user` or wine when those are
+installed, and CI runs them natively on Linux, Windows and both Mac
+architectures.
 
 ---
 

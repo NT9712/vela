@@ -40,9 +40,7 @@ pub fn seed(s: Int) {
 
 /// Seed from the clock.
 pub fn seed_from_clock() {
-    let ts = core.alloc(32, 0)
-    @syscall(sys.SYS_CLOCK_GETTIME, 0, ts + 16)
-    seed(@load64(ts + 16) * 1000000000 + @load64(ts + 24))
+    seed(sys.clock_ns(0))
 }
 
 /// The next 64-bit value.

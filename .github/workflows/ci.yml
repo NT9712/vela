@@ -79,6 +79,129 @@ jobs:
           ./bin/velac -q --target arm64 -o /tmp/calc-arm64 examples/calculator.vela
           test "$(qemu-aarch64 /tmp/calc-arm64 '2^16 - 1')" = "65535.0"
 
+  macos:
+    name: build and run natively on macOS
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13      # Intel
+            arch: x86_64
+          - runner: macos-14      # Apple Silicon
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: confirm the runner architecture
+        run: |
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "${{ matrix.arch }}"
+      - name: build the toolchain
+        run: make
+      - name: the compiler and the tools it built actually run
+        run: |
+          set -e
+          export VELA_ROOT=$PWD
+          ./bin/velac --version
+          ./bin/vela version
+          file bin/vela | grep -q Mach-O
+      - name: golden programs, the standard library and the toolchain
+        run: ./tests/run.sh macos
+      - name: the rest of the suite, natively
+        run: |
+          set -e
+          ./tests/run.sh run
+          ./tests/run.sh fail
+          ./tests/run.sh unit
+          ./tests/run.sh fmt
+          ./tests/run.sh cli
+      - name: examples
+        run: |
+          set -e
+          export VELA_ROOT=$PWD
+          ./bin/velac -q -o /tmp/hello examples/hello.vela && /tmp/hello
+          ./bin/velac -q -o /tmp/calc examples/calculator.vela
+          test "$(/tmp/calc '2^16 - 1')" = "65535.0"
+      - name: a binary cross-compiled from Linux runs here too
+        run: |
+          set -e
+          export VELA_ROOT=$PWD
+          # the same source, compiled for the other macOS architecture, must at
+          # least be structurally sound
+          other=macos-x64
+          [ "${{ matrix.arch }}" = "x86_64" ] && other=macos-arm64
+          ./bin/velac -q --target "$other" -o /tmp/other examples/hello.vela
+          python3 tests/machocheck.py /tmp/other
+      - name: the ad-hoc signature satisfies the system, not just our checker
+        run: |
+          codesign --verify --verbose /tmp/hello
+          codesign --display --verbose=2 /tmp/hello 2>&1 | head -20
+
+  windows:
+    name: cross-compile on Linux, execute on Windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the compiler
+        run: make bin/velac
+      - name: cross-compile the suite to PE32+
+        run: |
+          set -e
+          export VELA_ROOT=$PWD
+          mkdir -p /tmp/win
+          for f in tests/run/*.vela; do
+            n=$(basename "$f" .vela)
+            ./bin/velac -q --target windows -o "/tmp/win/$n.exe" "$f"
+            python3 tests/pecheck.py "/tmp/win/$n.exe"
+            # keep the expected output beside the binary
+            awk '/^\/\/ EXPECT:/{flag=1;next} /^\/\//{if(flag){sub(/^\/\/ ?/,"");print;next}} {if(flag)exit}' "$f" > "/tmp/win/$n.expected"
+          done
+          ./bin/velac -q --target windows --test -o /tmp/win/stdlib.exe tests/lib/stdlib.vela
+          ./bin/velac -q --target windows -o /tmp/win/vela.exe tools/cli.vela
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: /tmp/win
+
+  windows-run:
+    name: run the Windows binaries
+    needs: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: win
+      - name: golden programs
+        shell: bash
+        run: |
+          set -e
+          fail=0
+          for exe in win/*.exe; do
+            n=$(basename "$exe" .exe)
+            [ -f "win/$n.expected" ] || continue
+            actual="$(./$exe)"
+            expected="$(cat win/$n.expected)"
+            if [ "$actual" != "$expected" ]; then
+              echo "FAIL $n"; diff <(echo "$expected") <(echo "$actual") || true; fail=1
+            else
+              echo "ok   $n"
+            fi
+          done
+          exit $fail
+      - name: standard library
+        shell: bash
+        run: |
+          ./win/stdlib.exe | tail -3
+          ./win/stdlib.exe | tail -1 | grep -q "0 failed"
+      - name: the toolchain itself
+        shell: bash
+        run: |
+          ./win/vela.exe version | grep -q windows
+          ./win/vela.exe new demo
+          test -f demo/vela.toml
+          test -f demo/src/main.vela
+
   sanitizers:
     name: compiler under asan/ubsan
     runs-on: ubuntu-latest

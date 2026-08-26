@@ -20,7 +20,25 @@ TOOLS   := $(wildcard tools/*.vela)
 
 VERSION ?= 1.1.0
 ARCH    ?= x86_64
-DISTNAME := vela-$(VERSION)-linux-$(ARCH)
+OS      ?= linux
+DISTNAME := vela-$(VERSION)-$(OS)-$(ARCH)
+
+# The compiler emits binaries for every supported platform from any host, but
+# `velac` itself is C and has to be built by a C compiler for the target.
+# Windows and macOS packages therefore ship the Vela-written tools cross-built
+# here, and expect `velac` to come from a native build on the target.
+VELA_TARGET := $(OS)-$(ARCH)
+ifeq ($(OS),linux)
+  ifeq ($(ARCH),x86_64)
+    VELA_TARGET := x86_64
+  else
+    VELA_TARGET := arm64
+  endif
+endif
+ifeq ($(OS),windows)
+  VELA_TARGET := windows-x64
+  EXE := .exe
+endif
 
 .PHONY: all test bench install uninstall clean fmt check dist site site-deploy cross-test
 
@@ -89,12 +107,16 @@ CROSS_CC ?= aarch64-linux-gnu-gcc
 dist: all
 	rm -rf dist/$(DISTNAME)
 	mkdir -p dist/$(DISTNAME)/bin dist/$(DISTNAME)/lib
-ifeq ($(ARCH),arm64)
+ifeq ($(OS)-$(ARCH),linux-x86_64)
+	cp bin/velac bin/vela bin/vela-lsp        dist/$(DISTNAME)/bin/
+else ifeq ($(OS)-$(ARCH),linux-arm64)
 	$(CROSS_CC) $(CFLAGS) -static -o dist/$(DISTNAME)/bin/velac $(SRC)
 	VELA_ROOT=$(CURDIR) $(VELAC) -q --target arm64 -o dist/$(DISTNAME)/bin/vela     tools/cli.vela
 	VELA_ROOT=$(CURDIR) $(VELAC) -q --target arm64 -o dist/$(DISTNAME)/bin/vela-lsp tools/lsp.vela
 else
-	cp bin/velac bin/vela bin/vela-lsp        dist/$(DISTNAME)/bin/
+	VELA_ROOT=$(CURDIR) $(VELAC) -q --target $(VELA_TARGET) -o dist/$(DISTNAME)/bin/vela$(EXE)     tools/cli.vela
+	VELA_ROOT=$(CURDIR) $(VELAC) -q --target $(VELA_TARGET) -o dist/$(DISTNAME)/bin/vela-lsp$(EXE) tools/lsp.vela
+	@echo "note: velac must be built natively on $(OS)/$(ARCH) with 'make'"
 endif
 	cp -r lib/core lib/std                    dist/$(DISTNAME)/lib/
 	cp -r editor docs examples spec           dist/$(DISTNAME)/

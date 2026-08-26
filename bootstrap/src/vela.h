@@ -448,7 +448,7 @@ typedef enum {
     IR_EQ, IR_NE, IR_LT, IR_LE, IR_GT, IR_GE,
     IR_FEQ, IR_FNE, IR_FLT, IR_FLE, IR_FGT, IR_FGE,
     IR_I2F, IR_F2I, IR_CALL, IR_CALL_IND, IR_SYSCALL,
-    IR_SAVE_REGS, IR_STACK_TOP, IR_LIST_GET, IR_STR_IDX, IR_LIST_SET,
+    IR_SAVE_REGS, IR_STACK_TOP, IR_LIST_GET, IR_STR_IDX, IR_LIST_SET, IR_WINCALL,
     /* effects */
     IR_STORE_LOCAL, IR_STORE_MEM, IR_STORE_GLOBAL, IR_RESTORE_REGS, IR_TRAP,
     /* terminators */
@@ -515,7 +515,16 @@ extern RoData g_rodata;
 /* targets                                                              */
 /* ------------------------------------------------------------------ */
 
-typedef enum { TARGET_X86_64 = 0, TARGET_ARM64 } Target;
+typedef enum { TARGET_X86_64 = 0, TARGET_ARM64, TARGET_WINDOWS_X64,
+               TARGET_MACOS_X64, TARGET_MACOS_ARM64 } Target;
+
+/* An operating system interface the backend must provide. */
+typedef enum { OS_LINUX = 0, OS_WINDOWS, OS_MACOS } TargetOS;
+
+/* Where a macOS syscall's second return word is parked, as an offset into the
+   runtime state area. Kept in step with `RT_SYSAUX` in lib/core/core.vela. */
+#define RT_SYSAUX 392
+TargetOS target_os(Target t);
 extern Target g_target;
 const char *target_name(Target t);
 int target_from_name(const char *s, Target *out);
@@ -533,6 +542,31 @@ typedef struct {
 } ElfImage;
 
 int elf_write(const ElfImage *img, const char *path);
+
+/* Windows imports the compiler knows how to emit. `sys_windows.vela` refers to
+   these by index through the `@winapi` intrinsic. */
+typedef struct { const char *dll; const char *fn; } WinImport;
+extern const WinImport win_imports[];
+int win_import_count(void);
+
+/* Shared Mach-O writer, parameterised the same way as the ELF one. */
+typedef struct {
+    Buf     *text;
+    uint64_t text_vaddr;
+    size_t   ro_off;
+    uint64_t data_vaddr;
+    size_t   rw_size;
+    uint64_t entry;
+    int      arm;            /* 1 = arm64, 0 = x86-64 */
+    uint64_t page;           /* segment alignment: 16 KiB on arm64 */
+    const char *ident;       /* code-signing identifier */
+} MachImage;
+
+int macho_write(const MachImage *img, const char *path);
+const char *mach_ident(const char *path);
+int pe_write(Buf *text, size_t ro_off, size_t rw_size, uint32_t entry_rva,
+             uint32_t iat_rva, const char *path);
+size_t pe_idata_size(void);
 
 int sema_run(Unit *u);
 int irgen_run(Unit *u);

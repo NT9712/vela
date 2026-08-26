@@ -20,7 +20,7 @@ struct Doc {
 }
 
 struct Server {
-    docs: {Str: Str },
+    docs: {Str: Str},
     root: Str,
     shutdown: Bool,
 }

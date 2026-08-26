@@ -1,2 +1,1 @@
-! > type { return [ const 'a' ( : match std/io . = @ } .. use . 'a' Int ; false mut fn let and std/io 
- { > fn use .. test ( < or test - : test fn .. if { "s" 1 or /
+! > type { return [const 'a'(: match std / io. = @ }..use.'a' Int ; false mut fn let and std / io{ > fn use..test( < or test - : test fn..if { "s" 1 or /

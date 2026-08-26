@@ -14,7 +14,7 @@ use std/time
 struct Request {
     method: Str,
     path: Str,
-    headers: {Str: Str },
+    headers: {Str: Str},
 }
 
 /// Parse the request line and headers of an HTTP request.
@@ -28,7 +28,7 @@ pub fn parse_request(raw: Str) -> !Request {
     if len(parts) < 2 {
         return err("malformed request line '{lines[0]}'")
     }
-    let headers: {Str: Str } = {:}
+    let headers: {Str: Str} = {:}
     for i, l in lines {
         if i == 0 {
             continue

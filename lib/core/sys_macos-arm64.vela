@@ -1,0 +1,348 @@
+// core/sys — the macOS (Darwin) system-call layer.
+//
+// macOS has no libc-free ABI guarantee the way Linux does, but the BSD system
+// call numbers below have been stable for the whole life of the platform and
+// are what libSystem itself issues. Nothing here links against libSystem: the
+// binaries are static Mach-O images that trap directly into the kernel.
+//
+// Three BSD conventions differ from Linux and are handled here:
+//
+//   * failure is signalled by the carry flag with a positive errno in the
+//     return register. The backend normalises that to a negative result, so
+//     the code below reads the same as on Linux.
+//   * some calls return a second word. `fork` uses it to tell the child from
+//     the parent, and `pipe` returns both descriptors that way. The backend
+//     parks it in `core.RT_SYSAUX`.
+//   * `stat` is `stat64`, whose layout differs from the Linux one.
+//
+// arm64 macOS additionally refuses to run an unsigned binary, so the compiler
+// gives every image an ad-hoc code signature. See bootstrap/src/macho.c.
+
+use core
+
+pub const ARCH: Str = "macos-arm64"
+
+// arm64 passes the bare BSD number in x16; the 0x2000000 class prefix that
+// x86-64 requires is not used here.
+const CLASS: Int = 0
+
+pub const SYS_EXIT: Int = CLASS + 1
+pub const SYS_FORK: Int = CLASS + 2
+pub const SYS_READ: Int = CLASS + 3
+pub const SYS_WRITE: Int = CLASS + 4
+pub const SYS_OPEN: Int = CLASS + 5
+pub const SYS_CLOSE: Int = CLASS + 6
+pub const SYS_WAIT4: Int = CLASS + 7
+pub const SYS_UNLINK: Int = CLASS + 10
+pub const SYS_CHDIR: Int = CLASS + 12
+pub const SYS_GETPID: Int = CLASS + 20
+pub const SYS_RECVFROM: Int = CLASS + 29
+pub const SYS_ACCEPT: Int = CLASS + 30
+pub const SYS_KILL: Int = CLASS + 37
+pub const SYS_DUP2: Int = CLASS + 90
+pub const SYS_EXECVE: Int = CLASS + 59
+pub const SYS_MUNMAP: Int = CLASS + 73
+pub const SYS_SELECT: Int = CLASS + 93
+pub const SYS_SOCKET: Int = CLASS + 97
+pub const SYS_CONNECT: Int = CLASS + 98
+pub const SYS_BIND: Int = CLASS + 104
+pub const SYS_SETSOCKOPT: Int = CLASS + 105
+pub const SYS_LISTEN: Int = CLASS + 106
+pub const SYS_GETTIMEOFDAY: Int = CLASS + 116
+pub const SYS_RENAME: Int = CLASS + 128
+pub const SYS_SENDTO: Int = CLASS + 133
+pub const SYS_SHUTDOWN: Int = CLASS + 134
+pub const SYS_SOCKETPAIR: Int = CLASS + 135
+pub const SYS_MKDIR: Int = CLASS + 136
+pub const SYS_RMDIR: Int = CLASS + 137
+pub const SYS_IOCTL: Int = CLASS + 54
+pub const SYS_READLINK: Int = CLASS + 58
+pub const SYS_MMAP: Int = CLASS + 197
+pub const SYS_LSEEK: Int = CLASS + 199
+pub const SYS_GETCWD: Int = CLASS + 326
+pub const SYS_STAT64: Int = CLASS + 338
+pub const SYS_GETDIRENTRIES64: Int = CLASS + 344
+
+/// Byte offsets into `struct stat64`.
+pub const STAT_SIZE: Int = 144
+pub const STAT_MODE_OFF: Int = 8
+pub const STAT_SIZE_OFF: Int = 96
+
+pub const O_RDONLY: Int = 0
+pub const O_WRONLY: Int = 1
+pub const O_CREAT: Int = 512
+pub const O_TRUNC: Int = 1024
+pub const O_APPEND: Int = 8
+
+/// The second return word of the syscall just issued.
+fn sysaux() -> Int {
+    return @load64(@rt_base() + core.RT_SYSAUX)
+}
+
+pub fn read(fd: Int, buf: Int, n: Int) -> Int {
+    return @syscall(SYS_READ, fd, buf, n)
+}
+
+pub fn write(fd: Int, buf: Int, n: Int) -> Int {
+    return @syscall(SYS_WRITE, fd, buf, n)
+}
+
+pub fn close(fd: Int) -> Int {
+    return @syscall(SYS_CLOSE, fd)
+}
+
+/// MAP_PRIVATE | MAP_ANON, with -1 for the descriptor. Darwin has no
+/// MAP_NORESERVE, but it does not overcommit-account anonymous memory either,
+/// so a large reservation stays lazy.
+pub fn mem_reserve(n: Int) -> Int {
+    return @syscall(SYS_MMAP, 0, n, 3, 0x1002, -1, 0)
+}
+
+pub fn mem_commit(_p: Int, _n: Int) -> Int {
+    return 0
+}
+
+pub fn mem_alloc(n: Int) -> Int {
+    return @syscall(SYS_MMAP, 0, n, 3, 0x1002, -1, 0)
+}
+
+pub fn exit_group(code: Int) {
+    @syscall(SYS_EXIT, code)
+}
+
+pub fn open(path: Int, flags: Int, mode: Int) -> Int {
+    return @syscall(SYS_OPEN, path, flags, mode)
+}
+
+pub fn stat(path: Int, buf: Int) -> Int {
+    return @syscall(SYS_STAT64, path, buf)
+}
+
+pub fn mode_is_dir(m: Int) -> Bool {
+    return (m & 61440) == 16384
+}
+
+pub fn mode_is_file(m: Int) -> Bool {
+    return (m & 61440) == 32768
+}
+
+pub fn unlink(path: Int) -> Int {
+    return @syscall(SYS_UNLINK, path)
+}
+
+pub fn mkdir(path: Int, mode: Int) -> Int {
+    return @syscall(SYS_MKDIR, path, mode)
+}
+
+pub fn rmdir(path: Int) -> Int {
+    return @syscall(SYS_RMDIR, path)
+}
+
+pub fn rename(from: Int, to: Int) -> Int {
+    return @syscall(SYS_RENAME, from, to)
+}
+
+pub fn readlink(path: Int, buf: Int, n: Int) -> Int {
+    return @syscall(SYS_READLINK, path, buf, n)
+}
+
+/// BSD `pipe` hands both descriptors back in registers rather than through a
+/// buffer, so the second one comes from the auxiliary slot.
+pub fn pipe(fds: Int) -> Int {
+    let r = @syscall(CLASS + 42)
+    if r < 0 {
+        return r
+    }
+    @store64(fds, r)
+    @store64(fds + 8, sysaux())
+    return 0
+}
+
+pub fn dup2(old: Int, new: Int) -> Int {
+    return @syscall(SYS_DUP2, old, new)
+}
+
+/// In the child, BSD `fork` returns the parent's pid with 1 in the auxiliary
+/// slot; libc turns that into the 0 every caller expects, and so does this.
+pub fn fork() -> Int {
+    let r = @syscall(SYS_FORK)
+    if r < 0 {
+        return r
+    }
+    if sysaux() == 1 {
+        return 0
+    }
+    return r
+}
+
+// ---------------------------------------------------------- higher level
+
+/// Nanoseconds from a clock: 0 = wall clock, 1 = monotonic. Darwin's monotonic
+/// clock is `mach_absolute_time`, which is a libSystem entry point rather than
+/// a syscall, so both use the wall clock here.
+pub fn clock_ns(_which: Int) -> Int {
+    let tv = scratch(0, 32)
+    @syscall(SYS_GETTIMEOFDAY, tv, 0)
+    return @load64(tv) * 1000000000 + @load64(tv + 8) * 1000
+}
+
+/// `select` with no descriptors is the portable BSD sleep.
+pub fn sleep_ms(ms: Int) {
+    let tv = scratch(0, 32)
+    @store64(tv, ms / 1000)
+    @store64(tv + 8, (ms % 1000) * 1000)
+    @syscall(SYS_SELECT, 0, 0, 0, 0, tv)
+}
+
+pub fn getpid() -> Int {
+    return @syscall(SYS_GETPID)
+}
+
+/// TIOCGWINSZ; the request encoding differs from Linux's.
+pub fn is_tty(fd: Int) -> Bool {
+    let buf = scratch(64, 80)
+    return @syscall(SYS_IOCTL, fd, 0x40087468, buf) == 0
+}
+
+pub fn getcwd(buf: Int, n: Int) -> Int {
+    if @syscall(SYS_GETCWD, buf, n) < 0 {
+        return -1
+    }
+    let mut l = 0
+    while @load8(buf + l) != 0 {
+        l += 1
+    }
+    return l
+}
+
+pub fn chdir(path: Int) -> Int {
+    return @syscall(SYS_CHDIR, path)
+}
+
+pub fn dir_open(path: Int) -> Int {
+    return open(path, O_RDONLY, 0)
+}
+
+/// `getdirentries64` needs somewhere to keep the directory offset between
+/// calls, and it fills the buffer with `dirent64` records: a 64-bit inode, a
+/// 64-bit seek offset, a 16-bit record length, a 16-bit name length, a 1-byte
+/// type, then the name.
+pub fn dir_read(h: Int, buf: Int, n: Int) -> Int {
+    let pos = @rt_base() + 512 + 240
+    let r = @syscall(SYS_GETDIRENTRIES64, h, buf, n, pos)
+    if r < 0 {
+        return 0
+    }
+    return r
+}
+
+pub fn dir_close(h: Int) {
+    close(h)
+}
+
+pub fn dirent_reclen(p: Int) -> Int {
+    return @load16(p + 16)
+}
+
+pub fn dirent_name(p: Int) -> Int {
+    return p + 21
+}
+
+pub fn spawn(path: Int, argv: Int, envp: Int, out: Int, err: Int) -> Int {
+    let pid = fork()
+    if pid != 0 {
+        return pid
+    }
+    if out >= 0 {
+        dup2(out, 1)
+    }
+    if err >= 0 {
+        dup2(err, 2)
+    }
+    @syscall(SYS_EXECVE, path, argv, envp)
+    exit_group(127)
+    return -1
+}
+
+pub fn wait_pid(pid: Int) -> Int {
+    let st = scratch(160, 32)
+    @syscall(SYS_WAIT4, pid, st, 0, 0)
+    let raw = @load32(st)
+    if raw & 127 != 0 {
+        return 128 + (raw & 127)
+    }
+    return (raw >> 8) & 255
+}
+
+pub fn kill(pid: Int, sig: Int) -> Int {
+    return @syscall(SYS_KILL, pid, sig)
+}
+
+// -------------------------------------------------------------- sockets
+
+pub const AF_INET: Int = 2
+pub const SOCK_STREAM: Int = 1
+pub const SOL_SOCKET: Int = 0xFFFF
+pub const SO_REUSEADDR: Int = 4
+
+pub fn net_init() {}
+
+pub fn socket_tcp() -> Int {
+    return @syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, 0)
+}
+
+pub fn connect(fd: Int, addr: Int, len: Int) -> Int {
+    return @syscall(SYS_CONNECT, fd, addr, len)
+}
+
+pub fn bind(fd: Int, addr: Int, len: Int) -> Int {
+    return @syscall(SYS_BIND, fd, addr, len)
+}
+
+pub fn listen(fd: Int, backlog: Int) -> Int {
+    return @syscall(SYS_LISTEN, fd, backlog)
+}
+
+pub fn accept(fd: Int) -> Int {
+    return @syscall(SYS_ACCEPT, fd, 0, 0)
+}
+
+pub fn reuse_addr(fd: Int) {
+    let one = scratch(200, 16)
+    @store32(one, 1)
+    @syscall(SYS_SETSOCKOPT, fd, SOL_SOCKET, SO_REUSEADDR, one, 4)
+}
+
+pub fn sock_send(fd: Int, buf: Int, n: Int) -> Int {
+    return write(fd, buf, n)
+}
+
+pub fn sock_recv(fd: Int, buf: Int, n: Int) -> Int {
+    return read(fd, buf, n)
+}
+
+pub fn sock_close(fd: Int) {
+    @syscall(SYS_SHUTDOWN, fd, 2)
+    close(fd)
+}
+
+/// Darwin passes argv and envp on the stack the way Linux does.
+pub fn command_line() -> Int {
+    return 0
+}
+
+pub fn environ_block() -> Int {
+    return 0
+}
+
+/// A slice of the runtime scratch area, zeroed. The sys layer cannot allocate,
+/// because the allocator is built on top of it.
+fn scratch(off: Int, n: Int) -> Int {
+    let p = @rt_base() + 512 + off
+    let mut i = 0
+    while i < n {
+        @store8(p + i, 0)
+        i += 1
+    }
+    return p
+}

@@ -70,7 +70,10 @@ const RT_NGLOBALS: Int = 360
 const RT_IN_BUF: Int = 368
 const RT_IN_LEN: Int = 376
 const RT_IN_POS: Int = 384
-const RT_GLOBALS: Int = 512
+// Where a BSD syscall's second return word lands; see RT_SYSAUX in vela.h.
+pub const RT_SYSAUX: Int = 392
+const RT_SCRATCH: Int = 512
+const RT_GLOBALS: Int = 8192
 
 fn rt() -> Int {
     return @rt_base()
@@ -166,7 +169,7 @@ pub fn mcopy(dst: Int, src: Int, n: Int) {
 
 pub fn rt_init() {
     let want = HEAP_RESERVE + CHUNK_SIZE
-    let p = sys.mmap_anon(want)
+    let p = sys.mem_reserve(want)
     if p < 0 or p == 0 {
         let m = "vela: cannot reserve heap\n"
         sys_write(2, @addr(m) + 16, len(m))
@@ -179,12 +182,12 @@ pub fn rt_init() {
     rts(RT_THRESHOLD, 4194304)
     rts(RT_SINCE_GC, 0)
 
-    let ms = sys.mmap_anon(MARKSTACK_BYTES)
+    let ms = sys.mem_alloc(MARKSTACK_BYTES)
     rts(RT_MARKSTACK, ms)
     rts(RT_MARKCAP, MARKSTACK_BYTES / 8)
     rts(RT_MARKTOP, 0)
 
-    let cl = sys.mmap_anon(1048576)
+    let cl = sys.mem_alloc(1048576)
     rts(RT_CHUNKLIST, cl)
     rts(RT_CHUNKCAP, 131072)
     rts(RT_NCHUNKS, 0)
@@ -206,6 +209,7 @@ fn new_chunks(n: Int) -> Int {
         sys_write(2, @addr(m) + 16, len(m))
         exit(70)
     }
+    sys.mem_commit(bump, need)
     rts(RT_HEAP_BUMP, bump + need)
     let nc = rtl(RT_NCHUNKS)
     if nc < rtl(RT_CHUNKCAP) {
@@ -745,7 +749,7 @@ pub struct Buf {
 
 /// A new builder with room for `cap` bytes.
 pub fn buf_with(cap: Int) -> Buf {
-    let c = if cap < 32{32 } else {cap }
+    let c = if cap < 32{32} else {cap}
     return Buf{ data: alloc(16 + c, KIND_ATOMIC) + 16, n: 0, cap: c }
 }
 
@@ -2079,7 +2083,7 @@ pub fn stdin_getc() -> Int {
     }
     let mut b = rtl(RT_IN_BUF)
     if b == 0 {
-        b = sys.mmap_anon(IN_BUFSZ)
+        b = sys.mem_alloc(IN_BUFSZ)
         if b <= 0 {
             return -1
         }

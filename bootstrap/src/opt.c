@@ -11,7 +11,7 @@
 static int ins_has_effect(IrIns *i) {
     switch (i->op) {
         case IR_STORE_LOCAL: case IR_STORE_MEM: case IR_STORE_GLOBAL:
-        case IR_CALL: case IR_CALL_IND: case IR_SYSCALL:
+        case IR_CALL: case IR_CALL_IND: case IR_SYSCALL: case IR_WINCALL:
         case IR_JMP: case IR_BR: case IR_RET: case IR_RETV:
         case IR_TRAP: case IR_SAVE_REGS: case IR_RESTORE_REGS:
             return 1;
@@ -407,7 +407,7 @@ static const char *opname(IrOp o) {
         case IR_FLE: return "fle"; case IR_FGT: return "fgt"; case IR_FGE: return "fge";
         case IR_I2F: return "i2f"; case IR_F2I: return "f2i";
         case IR_CALL: return "call"; case IR_CALL_IND: return "call.ind";
-        case IR_SYSCALL: return "syscall"; case IR_SAVE_REGS: return "save.regs";
+        case IR_SYSCALL: return "syscall"; case IR_WINCALL: return "winapi"; case IR_SAVE_REGS: return "save.regs";
         case IR_STACK_TOP: return "rtslot";
         case IR_LIST_GET: return "list.get"; case IR_STR_IDX: return "str.at";
         case IR_LIST_SET: return "list.set"; case IR_STORE_LOCAL: return "st.local";
