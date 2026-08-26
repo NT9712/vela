@@ -8,19 +8,19 @@ This document states exactly what is written in what, so nobody has to guess.
 stage 0   a C99 compiler                    (provided by your system, used once)
    │
    ▼
-stage 1   bin/velac                          C  ~7,000 lines
+stage 1   bin/velac                          C  ~10,000 lines
           the bootstrap compiler: lexer, parser, resolver, type checker,
           monomorphiser, IR, optimiser, x86-64 encoder, ELF writer
    │
    │ compiles
    ▼
-stage 2   lib/core + lib/std                 Vela  ~4,000 lines
+stage 2   lib/core + lib/std                 Vela  ~5,000 lines
           the runtime and standard library: allocator, garbage collector,
           strings, lists, maps, formatting, files, processes, sockets
    │
    │ compiles
    ▼
-stage 3   bin/vela                           Vela  ~2,000 lines
+stage 3   bin/vela, bin/vela-lsp             Vela  ~2,600 lines
           the toolchain: lexer, formatter, documentation generator,
           project driver, package manager, REPL
 ```
@@ -48,10 +48,11 @@ $ ./tests/run.sh
 | formatter | **Vela** | ~600 |
 | documentation generator | **Vela** | ~250 |
 | `vela` driver, manifest parser, lockfile, REPL | **Vela** | ~700 |
-| lexer, parser, type checker, IR, backend | C | ~7,000 |
+| language server (diagnostics, hover, symbols, formatting) | **Vela** | ~450 |
+| lexer, parser, type checker, IR, backend | C | ~10,000 |
 
 So: **the runtime, the standard library and the entire toolchain other than the
-compiler itself are written in Vela.** Every Vela program you run — including
+compiler itself — including the language server — are written in Vela.** Every Vela program you run — including
 `vela fmt` and `vela doc` — executes native code produced by `velac` and calls
 into a garbage collector written in Vela.
 

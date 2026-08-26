@@ -246,3 +246,21 @@ Known limits, stated plainly:
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+## By the numbers
+
+| part | language | lines |
+|------|----------|-------|
+| bootstrap compiler | C | 10,000 |
+| runtime: allocator, collector, strings, collections, formatting | **Vela** | 2,900 |
+| standard library: io, fs, os, path, math, rand, time, sort, json, net, process, fmt, testing | **Vela** | 2,050 |
+| toolchain: lexer, formatter, doc generator, CLI, language server | **Vela** | 2,600 |
+| examples | **Vela** | 940 |
+| tests | Vela + shell | 950 |
+| documentation and specification | Markdown | 3,100 |
+
+52 test groups covering golden output, diagnostics, unit tests, formatter
+idempotency, the whole toolchain end to end, the language server, a regression
+corpus, and randomised fuzzing.
