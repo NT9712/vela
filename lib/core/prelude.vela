@@ -6,6 +6,22 @@
 
 use core
 
+// -------------------------------------------------------------------- Buf
+//
+// `Str` is immutable, so `s = s + piece` in a loop copies everything each time
+// and is quadratic. `Buf` is the answer, and it is in the prelude so that the
+// obvious thing to reach for is also the fast one.
+
+/// A new string builder.
+pub fn buf() -> core.Buf {
+    return core.buf()
+}
+
+/// A new string builder with room for `cap` bytes.
+pub fn buf_with(cap: Int) -> core.Buf {
+    return core.buf_with(cap)
+}
+
 // ---------------------------------------------------------------------- List
 
 /// Number of elements.
@@ -192,6 +208,12 @@ fn sift_down[T](xs: [T], root: Int, end: Int, less: fn(T, T) -> Bool) {
         xs[c] = t
         r = c
     }
+}
+
+/// Sort ascending, in place. Requires `<` on the element type; a type that
+/// does not have it reports the error at this call.
+pub fn List[T].sort(self) {
+    self.sort_by(| a, b | a < b)
 }
 
 /// Join the elements with `sep` between them.
@@ -460,6 +482,46 @@ pub fn Str.bytes(self) -> [Byte] {
         out.push(b)
     }
     return out
+}
+
+/// The UTF-8 characters, each as a one-character string. Invalid bytes are
+/// returned on their own rather than being dropped.
+pub fn Str.chars(self) -> [Str] {
+    let out: [Str] = []
+    let n = len(self)
+    let mut i = 0
+    while i < n {
+        let c = int(self[i])
+        let mut w = 1
+        if c >= 240 {
+            w = 4
+        } else if c >= 224 {
+            w = 3
+        } else if c >= 192 {
+            w = 2
+        }
+        if i + w > n {
+            w = 1
+        }
+        out.push(self[i..i + w])
+        i += w
+    }
+    return out
+}
+
+/// Number of UTF-8 characters (`len` counts bytes).
+pub fn Str.char_len(self) -> Int {
+    let n = len(self)
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        let c = int(self[i])
+        if c < 128 or c >= 192 {
+            count += 1
+        }
+        i += 1
+    }
+    return count
 }
 
 /// Parse as a decimal integer.

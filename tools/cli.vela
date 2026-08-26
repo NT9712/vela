@@ -46,7 +46,11 @@ fn main() -> Int {
     match r {
         ok(code) => return code,
         err(e) => {
-            io.eprintln("\x1b[1;31merror\x1b[0m: {e.msg}")
+            if os.use_color(2) {
+                io.eprintln("\x1b[1;31merror\x1b[0m: {e.msg}")
+            } else {
+                io.eprintln("error: {e.msg}")
+            }
             return 1
         },
     }

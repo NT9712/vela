@@ -33,21 +33,42 @@ Generate an always-current version from the source with `vela doc`.
 | `ok(v)`, `err(msg)`, `err_code(msg, code)` | build a `!T` |
 | `void` | the value of type `Void` |
 
+### `Buf` — the string builder
+
+```vela
+let b = buf()                  // or buf_with(expected_size)
+for x in xs {
+    b.push(str(x))
+    b.push_byte(',')
+}
+let s = b.str()
+```
+
+`Str` is immutable, so `s = s + piece` in a loop copies everything each time and
+is quadratic. Reach for `buf()` whenever you build a string in a loop. `Buf` is
+in the prelude, so no import is needed.
+
+`buf()` `buf_with(cap)` `Buf.push(s)` `Buf.push_byte(c)` `Buf.len()`
+`Buf.clear()` `Buf.str()`
+
 ### `Str`
 
-`len` `is_empty` `upper` `lower` `trim` `starts_with` `ends_with` `contains`
-`index_of` `split` `words` `lines` `replace` `repeat` `at` `bytes` `to_int`
-`to_float` `hash`
+`len` `char_len` `is_empty` `upper` `lower` `trim` `starts_with` `ends_with`
+`contains` `index_of` `split` `words` `lines` `replace` `repeat` `at` `bytes`
+`chars` `to_int` `to_float` `hash`
 
-Indexing yields a `Byte`; slicing yields a copy. Strings are immutable.
+Indexing yields a `Byte` and `len` counts bytes; `chars()` and `char_len()`
+decode UTF-8. Slicing yields a copy. Strings are immutable.
 
 ### `List[T]`
 
 `len` `is_empty` `push` `pop` `first` `last` `insert` `remove` `clear` `copy`
 `reverse` `map` `filter` `fold` `each` `any` `all` `find` `index_of` `contains`
-`sort_by` `join`
+`sort` `sort_by` `join`
 
-`sort_by` is an in-place heapsort: O(n log n) always, and it never allocates.
+`sort` and `sort_by` are an in-place heapsort: O(n log n) always, and neither
+allocates. `sort()` needs `<` on the element type; a type without it reports the
+error at the call site.
 
 ### `Map[K, V]`
 

@@ -206,7 +206,8 @@ struct Expr {
     int     inclusive;      /* range */
     int     is_static;      /* call to non-closure */
     int     builtin;        /* BI_* when this is a builtin call */
-    void   *extra;          /* auxiliary FnInst* (e.g. to_str override) */
+    void   *extra;          /* FnInst* of a user `to_str`, when there is one */
+    void   *cmp_type;       /* Type* compared by `==` on aggregates */
 };
 
 /* operand classes recorded on E_BINARY / E_INDEX / E_UNARY by sema */

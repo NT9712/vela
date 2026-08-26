@@ -108,6 +108,20 @@ pub fn exe_path() -> Str {
     return @ref[Str](p)
 }
 
+/// True when `fd` is a terminal. Used to decide whether to colour output.
+pub fn is_tty(fd: Int) -> Bool {
+    let buf = core.alloc(80, 0)
+    return @syscall(16, fd, 0x5401, buf + 16) == 0
+}
+
+/// True when output should be coloured: a terminal, and `NO_COLOR` is unset.
+pub fn use_color(fd: Int) -> Bool {
+    if let _v = getenv("NO_COLOR") {
+        return false
+    }
+    return is_tty(fd)
+}
+
 /// Sleep for `ms` milliseconds.
 pub fn sleep_ms(ms: Int) {
     let ts = core.alloc(32, 0)

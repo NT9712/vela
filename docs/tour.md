@@ -104,9 +104,22 @@ s.index_of("World")     // 7
 "ab".repeat(3)          // "ababab"
 "42".to_int()           // ?Int
 "3.5".to_float()        // ?Float
+s.chars()               // ["H", "e", ...] — UTF-8 aware
+s.char_len()            // characters, where len() counts bytes
 ```
 
 Strings are immutable and indexed by byte. `s[i]` yields a `Byte`.
+
+Building a string in a loop with `+` is quadratic, so use a builder:
+
+```vela
+let b = buf()
+for x in xs {
+    b.push(str(x))
+    b.push(", ")
+}
+let joined = b.str()
+```
 
 ---
 
@@ -141,6 +154,7 @@ xs.each(|v| println(str(v)))
 xs.any(|v| v > 2)
 xs.all(|v| v > 0)
 xs.find(|v| v % 2 == 0)          // ?T
+xs.sort()                        // in place, needs `<` on T
 xs.sort_by(|a, b| a < b)         // in place, O(n log n), no allocation
 xs.join(", ")
 ```

@@ -476,7 +476,7 @@ static int gen_binary(Gen *g, Expr *e) {
     Expr *es[2] = { e->a, e->b };
     int v[2];
     if (cls == OPC_ANY) {
-        Type *t = (Type *)e->extra;
+        Type *t = (Type *)e->cmp_type;
         int branchy = may_branch(e->a) || may_branch(e->b);
         if (branchy) {
             int s0 = -1;

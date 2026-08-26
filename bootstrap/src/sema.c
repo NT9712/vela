@@ -283,6 +283,10 @@ static Type *resolve_type(TypeExpr *te, Module *m, Subst *sub) {
                 if (core) { Decl *c = find_type_decl(core, te->name); if (c && c->is_pub) d = c; }
             }
             if (!d) {
+                Module *pm = load_module("prelude", NULL, te->span);
+                if (pm) { Decl *c = find_type_decl(pm, te->name); if (c && c->is_pub) d = c; }
+            }
+            if (!d) {
                 Diag *dg = serr(te->span, "unknown type `%s`", te->name);
                 const char *cands[] = {"Int","Float","Bool","Byte","Str","Void","Range","Error"};
                 for (unsigned i = 0; i < sizeof cands / sizeof *cands; i++)
@@ -416,7 +420,7 @@ static Expr *clone_expr(Expr *e) {
     if (!e) return NULL;
     Expr *c = NEW(Expr);
     *c = *e;
-    c->sym = NULL; c->target = NULL; c->extra = NULL; c->type = NULL;
+    c->sym = NULL; c->target = NULL; c->extra = NULL; c->cmp_type = NULL; c->type = NULL;
     c->a = clone_expr(e->a);
     c->b = clone_expr(e->b);
     c->c = clone_expr(e->c);
@@ -495,11 +499,28 @@ static const char *mangle(Decl *d, Vec *targs) {
 
 static void check_fn_body(FnInst *fi);
 
+#define MAX_INSTANCES 512
+
 static FnInst *instantiate(Decl *d, Vec *targs, Span sp) {
     const char *nm = mangle(d, targs);
     for (int i = 0; i < d->insts.len; i++) {
         FnInst *f = VEC_AT(&d->insts, FnInst, i);
         if (f->name == nm) return f;
+    }
+    if (d->insts.len >= MAX_INSTANCES) {
+        static Decl *reported;
+        if (reported != d) {
+            reported = d;
+            Diag *dg = serr(sp, "`%s` has been instantiated %d times and is still growing",
+                            d->name, d->insts.len);
+            diag_note(dg, d->span, "`%s` is declared here", d->name);
+            char sh[120];
+            snprintf(sh, sizeof sh, "%s", nm);
+            if (strlen(nm) > 100) { sh[100] = 0; strcat(sh, "..."); }
+            diag_note(dg, NOSPAN, "a generic function that calls itself with a *larger* type "
+                                  "never terminates; the last instance was `%s`", sh);
+        }
+        return VEC_AT(&d->insts, FnInst, 0);
     }
     FnInst *fi = NEW(FnInst);
     fi->name = nm;
@@ -535,6 +556,7 @@ static Type *check_expr(Expr *e, Type *want);
 static void clear_types(Expr *e) {
     if (!e) return;
     e->type = NULL; e->target = NULL; e->sym = NULL; e->extra = NULL;
+    e->cmp_type = NULL;
     clear_types(e->a); clear_types(e->b); clear_types(e->c);
     if (e->kind == E_STRUCT)
         for (int i = 0; i < e->list.len; i++)
@@ -641,6 +663,24 @@ static int unify(TypeExpr *te, Type *t, Subst *s, Module *m) {
         }
     }
     return 1;
+}
+
+/* Public declarations of the `prelude` module are visible everywhere, the same
+   way its methods are. */
+static Module *prelude_mod;
+static Sym *lookup_prelude(const char *name) {
+    if (!prelude_mod) {
+        for (int i = 0; i < g_unit.modules.len; i++) {
+            Module *m = VEC_AT(&g_unit.modules, Module, i);
+            if (m->modpath == intern("prelude")) { prelude_mod = m; break; }
+        }
+    }
+    if (!prelude_mod || !prelude_mod->scope) return NULL;
+    Sym *s = scope_get_local((Scope *)prelude_mod->scope, name);
+    if (s && s->decl && s->decl->is_pub &&
+        (s->kind == SYM_FN || s->kind == SYM_CONST || s->kind == SYM_TYPE))
+        return s;
+    return NULL;
 }
 
 /* Look up a symbol, walking out through enclosing closures and adding
@@ -1078,7 +1118,7 @@ static Type *check_binary(Expr *e) {
             case TY_ENUM: e->idx = t->is_prim ? OPC_INT : OPC_ANY; break;
             default: e->idx = OPC_ANY; break;
         }
-        if (e->idx == OPC_ANY) e->extra = (void *)t;
+        if (e->idx == OPC_ANY) e->cmp_type = (void *)t;
         return ty_bool;
     }
 
@@ -1298,6 +1338,7 @@ static Decl *type_path(Expr *base) {
     if (!base) return NULL;
     if (base->kind == E_IDENT) {
         Sym *s = scope_get(cur_fn->scope, base->name);
+        if (!s) s = lookup_prelude(base->name);
         if (s && s->kind == SYM_TYPE) { base->sym = s; return s->decl; }
         return NULL;
     }
@@ -1420,6 +1461,7 @@ static Type *check_expr(Expr *e, Type *want) {
             int bi = builtin_id(e->name);
             Sym *s = lookup_capture(cur_fn, e->name);
             if (!s && bi) { e->builtin = bi; r = ty_void; break; }
+            if (!s) s = lookup_prelude(e->name);
             if (!s) {
                 Diag *d = serr(e->span, "cannot find `%s` in this scope", e->name);
                 const char *g = suggest_in_scope(cur_fn->scope, e->name);
@@ -1790,6 +1832,7 @@ static Type *check_expr(Expr *e, Type *want) {
                 int bi = builtin_id(cal->name);
                 Sym *s = lookup_capture(cur_fn, cal->name);
                 if (!s && bi) { r = check_builtin(e, bi, &e->list, e->span); break; }
+                if (!s) s = lookup_prelude(cal->name);
                 if (s && s->kind == SYM_FN) {
                     Vec targs; memset(&targs, 0, sizeof targs);
                     for (int i = 0; i < cal->targs.len; i++)
@@ -2166,7 +2209,7 @@ static Type *check_builtin(Expr *e, int bi, Vec *args, Span sp) {
                 if (!assignable(b, a))
                     serr(sp, "`%s` needs two values of the same type, found `%s` and `%s`",
                          bi == BI_ASSERT_EQ ? "assert_eq" : "assert_ne", ty_str_of(a), ty_str_of(b));
-                e->extra = (void *)a;
+                e->cmp_type = (void *)a;
                 for (int i = 0; i < 2; i++) {
                     Expr *x = VEC_AT(args, Expr, i);
                     FnInst *ts = find_to_str(x->type);

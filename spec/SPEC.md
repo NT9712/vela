@@ -88,9 +88,12 @@ io.println("hello, {name}! 1+2={1 + 2}")
 
 ### 1.6 Statement termination
 
-Vela has **no semicolons**. Statements end at a newline. A statement continues
-onto the next line when the line ends with a binary operator, a comma, or an
-open bracket (`(`, `[`, `{`) that is not yet closed.
+Statements end at a newline. A statement continues onto the next line when the
+line ends with a binary operator, a comma, or an open bracket (`(`, `[`, `{`)
+that is not yet closed.
+
+`;` is a legal statement *separator*, so several statements may share a line.
+It is never a terminator, and the formatter puts each statement on its own line.
 
 ```vela
 let total = a +
@@ -123,6 +126,9 @@ Sugar:
 | `{K: V}`  | `Map[K, V]`  |
 | `?T`      | optional `T` |
 | `!T`      | `T` or `Error` |
+
+Types declared in another module are written `module.Type`, e.g. `json.Json` or
+`store.Task`.
 
 ### 2.2 Value kinds
 
@@ -388,9 +394,18 @@ Circular imports are an error and are reported with the full cycle.
 
 ### 4.2 The prelude
 
-Every module implicitly has these in scope: the built-in types; `ok`, `err`,
-`err_code`, `void`; `str`, `int`, `float`, `byte`, `bool` (conversions);
-`len`, `assert`, `panic`, `print`, `println`; `Error`; `Option`-style `nil`.
+Every module implicitly has these in scope:
+
+* the built-in types, plus `Error` and `Buf`;
+* `ok`, `err`, `err_code`, `void`, `nil`;
+* the conversions `str`, `int`, `float`, `byte`, `bool`;
+* `len`, `assert`, `assert_eq`, `assert_ne`, `panic`, `print`, `println`;
+* `buf` and `buf_with`, the string builders;
+* every method the standard library declares on a built-in type
+  (`Str.trim`, `List[T].map`, `Map[K,V].keys`, `Int.abs`, ...).
+
+The prelude is `lib/core/prelude.vela`. It is ordinary Vela and it is worth
+reading.
 
 ---
 
@@ -427,8 +442,36 @@ if cond {
 if let v = maybe { ... } else { ... }     // optional binding
 ```
 
-Braces are mandatory. `if` is a statement, not an expression. Use `match` or a
-ternary-free `if/else` with assignment where you would want an if-expression.
+Braces are mandatory.
+
+`if` is also an **expression** when it has an `else`:
+
+```vela
+let label = if n < 0 { "negative" } else if n == 0 { "zero" } else { "positive" }
+```
+
+An `if` used as a value must have an `else`, because every branch has to produce
+one. `if let` is a statement only.
+
+### 5.2.1 Blocks as values
+
+A block used as a value evaluates to its final expression. This applies to
+`if`/`else` branches, `match` arms and lambda bodies — but not to `fn` bodies,
+which always need an explicit `return`.
+
+```vela
+let cost = if premium {
+    let base = 100
+    base * 2                 // the value of the branch
+} else {
+    50
+}
+
+let f = |a: Int, b: Int| {
+    let t = a + b
+    t * 2                    // the value of the lambda
+}
+```
 
 ### 5.3 While / loop
 
@@ -446,8 +489,11 @@ while i < n {
 for i in 0..n { }            // Range, exclusive upper bound
 for i in 0..=n { }           // inclusive
 for x in xs { }              // List[T] -> T
-for k, v in m { }            // Map[K,V] -> K, V
-for i, x in xs.enumerate() { }
+for i, x in xs { }           // index and value
+for b in s { }               // Str -> Byte
+for i, b in s { }            // index and byte
+for k in m { }               // Map[K,V] -> K
+for k, v in m { }            // key and value
 ```
 
 ### 5.5 Match
@@ -469,8 +515,11 @@ Patterns:
 pattern := '_'                      // wildcard
          | ident                    // binding
          | literal                  // Int / Float / Str / Bool / Byte / nil
-         | Type '.' Variant         // enum, no payload
-         | Type '.' Variant '(' pattern,* ')'
+         | 'some' '(' pattern ')'   // a present optional
+         | 'ok' '(' pattern ')'     // a successful result
+         | 'err' '(' pattern ')'    // a failed result
+         | [module '.'] Type '.' Variant
+         | [module '.'] Type '.' Variant '(' pattern,* ')'
          | Type '{' field ':' pattern,* '}'   // struct
          | pattern '|' pattern      // alternation (no bindings)
 ```
@@ -641,6 +690,9 @@ test "addition" {
 `test` blocks are compiled only by `vela test`, which links them into a test
 binary with a harness. `assert`, `assert_eq`, `assert_ne` are in the prelude.
 
+A test body is a `!Void` function, so `?` may be used inside it; a propagated
+error fails that test rather than aborting the run.
+
 ---
 
 ## 10. Grammar (EBNF)
@@ -671,7 +723,7 @@ type        = "?" type
             | "[" type "]"
             | "{" type ":" type "}"
             | "fn" "(" [ type { "," type } ] ")" [ "->" type ]
-            | ident [ "[" type { "," type } "]" ] ;
+            | [ ident "." ] ident [ "[" type { "," type } "]" ] ;
 
 block       = "{" { stmt } "}" ;
 stmt        = let | assign | if | while | for | match | return
@@ -688,9 +740,12 @@ match       = "match" expr "{" { arm } "}" ;
 arm         = pattern [ "if" expr ] "=>" ( expr | block ) [ "," ] ;
 
 expr        = or_expr ;
+if_expr     = "if" expr block "else" ( if_expr | block ) ;
 (* see §6.1 for the full precedence chain *)
 primary     = literal | ident | "(" expr ")" | list_lit | map_lit
-            | lambda | struct_lit | match | intrinsic ;
+            | lambda | struct_lit | match | if_expr | intrinsic ;
+struct_lit  = [ ident "." ] ident [ "[" type { "," type } "]" ]
+              "{" { ident [ ":" expr ] "," } "}" ;
 lambda      = "|" [ lparams ] "|" ( expr | block )
             | "fn" "(" [ params ] ")" [ "->" type ] block ;
 intrinsic   = "@" ident [ "[" type { "," type } "]" ] "(" [ args ] ")" ;
@@ -735,6 +790,9 @@ They are the primitive operations the runtime is built from.
 
 ```
 @syscall(n, a1..a6) -> Int      raw Linux syscall
+@argc() @argv() @envp() -> Int  the process arguments and environment
+@rt_base() -> Int               base of the runtime state area
+@fsqrt(f: Float) -> Float       hardware square root
 @load8/@load16/@load32/@load64(addr: Int) -> Int
 @store8/@store16/@store32/@store64(addr: Int, v: Int)
 @addr(x) -> Int                 address of a reference value
