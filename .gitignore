@@ -1,4 +1,6 @@
 bin/
+build/
 *.o
 a.out
-build/
+vela.lock
+examples/todo/deps/
