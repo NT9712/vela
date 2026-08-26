@@ -298,8 +298,11 @@ static int gen_to_str(Gen *g, Expr *e) {
         a[0] = gen_expr(g, e);
         return emit_call(g, fi, a, 1, 0);
     }
+    int w = gen_word(g, e);
+    int ws = new_slot(g);
+    emit_store_local(g, ws, w);
     int a[2];
-    a[0] = gen_word(g, e);
+    a[0] = emit_load_local(g, ws, 0);
     a[1] = gen_desc(g, t);
     return emit_call_n(g, "any_to_str", a, 2);
 }
@@ -395,6 +398,64 @@ static int logical_not(Gen *g, int v) {
     return i->dst;
 }
 
+/* Does evaluating this expression open new basic blocks? If so, any value
+   computed *before* it must be parked in a frame slot, because virtual
+   registers do not survive a block boundary. */
+static int may_branch(Expr *e) {
+    if (!e) return 0;
+    switch (e->kind) {
+        case E_ORELSE: case E_TRY: case E_MATCH: case E_STMTEXPR:
+            return 1;
+        case E_BINARY:
+            if (e->op == T_AND || e->op == T_OR) return 1;
+            break;
+        case E_INDEX:
+            if (e->idx == IDX_MAP) return 1;
+            break;
+        case E_CALL:
+            if (e->builtin == BI_ASSERT || e->builtin == BI_ASSERT_EQ ||
+                e->builtin == BI_ASSERT_NE) return 1;
+            break;
+        default: break;
+    }
+    if (may_branch(e->a) || may_branch(e->b) || may_branch(e->c)) return 1;
+    if (e->kind == E_STRUCT && e->builtin != -1) {
+        for (int i = 0; i < e->list.len; i++)
+            if (may_branch(VEC_AT(&e->list, FieldInit, i)->value)) return 1;
+        return 0;
+    }
+    if (e->kind == E_MATCH) return 1;
+    for (int i = 0; i < e->list.len; i++)
+        if (may_branch(VEC_AT(&e->list, Expr, i))) return 1;
+    return 0;
+}
+
+/* Evaluate `n` expressions left to right and hand back virtual registers that
+   are all live in the block we end up in. */
+static void gen_operands(Gen *g, Expr **es, Type **want, int n, int *out) {
+    int branchy = 0;
+    for (int i = 0; i < n; i++) if (may_branch(es[i])) branchy = 1;
+    if (!branchy || n == 1) {
+        for (int i = 0; i < n; i++) {
+            int v = gen_expr(g, es[i]);
+            if (want && want[i]) v = gen_coerce(g, v, es[i]->type, want[i]);
+            out[i] = v;
+        }
+        return;
+    }
+    int *slots = NEWN(int, n);
+    for (int i = 0; i < n; i++) {
+        int v = gen_expr(g, es[i]);
+        if (want && want[i]) v = gen_coerce(g, v, es[i]->type, want[i]);
+        slots[i] = new_slot(g);
+        emit_store_local(g, slots[i], v);
+    }
+    for (int i = 0; i < n; i++) {
+        Type *t = (want && want[i]) ? want[i] : es[i]->type;
+        out[i] = emit_load_local(g, slots[i], is_float_ty(t));
+    }
+}
+
 static int gen_binary(Gen *g, Expr *e) {
     int op = e->op, cls = e->idx;
     if (op == T_AND || op == T_OR) {
@@ -412,10 +473,34 @@ static int gen_binary(Gen *g, Expr *e) {
         g->blk = end;
         return emit_load_local(g, slot, 0);
     }
+    Expr *es[2] = { e->a, e->b };
+    int v[2];
+    if (cls == OPC_ANY) {
+        Type *t = (Type *)e->extra;
+        int branchy = may_branch(e->a) || may_branch(e->b);
+        if (branchy) {
+            int s0 = -1;
+            int a0 = gen_word(g, e->a);
+            s0 = new_slot(g);
+            emit_store_local(g, s0, a0);
+            int b0 = gen_word(g, e->b);
+            int s1 = new_slot(g);
+            emit_store_local(g, s1, b0);
+            v[0] = emit_load_local(g, s0, 0);
+            v[1] = emit_load_local(g, s1, 0);
+        } else {
+            v[0] = gen_word(g, e->a);
+            v[1] = gen_word(g, e->b);
+        }
+        int d = gen_desc(g, t ? t : e->a->type);
+        int args[3] = { v[0], v[1], d };
+        int r = emit_call_n(g, "any_eq", args, 3);
+        if (op == T_BANGEQ) return logical_not(g, r);
+        return r;
+    }
+    gen_operands(g, es, NULL, 2, v);
     if (cls == OPC_STR) {
-        int a = gen_expr(g, e->a);
-        int b = gen_expr(g, e->b);
-        int args[2] = { a, b };
+        int args[2] = { v[0], v[1] };
         if (op == T_PLUS) return emit_call_n(g, "str_concat", args, 2);
         if (op == T_EQEQ) return emit_call_n(g, "str_eq", args, 2);
         if (op == T_BANGEQ) return logical_not(g, emit_call_n(g, "str_eq", args, 2));
@@ -424,25 +509,11 @@ static int gen_binary(Gen *g, Expr *e) {
         return gen_binop_ir(g, op, OPC_INT, c, z, e->span);
     }
     if (cls == OPC_LIST) {
-        int a = gen_expr(g, e->a);
-        int b = gen_expr(g, e->b);
         int d = gen_desc(g, e->type);
-        int args[3] = { a, b, d };
+        int args[3] = { v[0], v[1], d };
         return emit_call_n(g, "list_concat", args, 3);
     }
-    if (cls == OPC_ANY) {
-        Type *t = (Type *)e->extra;
-        int a = gen_word(g, e->a);
-        int b = gen_word(g, e->b);
-        int d = gen_desc(g, t ? t : e->a->type);
-        int args[3] = { a, b, d };
-        int r = emit_call_n(g, "any_eq", args, 3);
-        if (op == T_BANGEQ) return logical_not(g, r);
-        return r;
-    }
-    int a = gen_expr(g, e->a);
-    int b = gen_expr(g, e->b);
-    int r = gen_binop_ir(g, op, cls, a, b, e->span);
+    int r = gen_binop_ir(g, op, cls, v[0], v[1], e->span);
     if (cls == OPC_BYTE && (op == T_PLUS || op == T_MINUS || op == T_STAR ||
                             op == T_SHL || op == T_SHR))
         return mask_byte(g, r);
@@ -479,48 +550,73 @@ static int gen_struct_lit(Gen *g, Expr *e) {
     if (e->builtin == -1) {
         if (t->is_prim) return emit_const(g, e->idx);
         int np = enum_payload_count(t, e->idx);
-        int *vals = NEWN(int, np > 0 ? np : 1);
-        for (int i = 0; i < np && i < e->list.len; i++) {
-            Expr *a = VEC_AT(&e->list, Expr, i);
-            Type *ft = enum_payload_type(t, e->idx, i);
-            int v = gen_expr(g, a);
-            v = gen_coerce(g, v, a->type, ft);
-            vals[i] = is_float_ty(ft) ? bitcast_f2i(g, v) : v;
+        if (np > e->list.len) np = e->list.len;
+        Expr **es = NEWN(Expr *, np > 0 ? np : 1);
+        Type **wt = NEWN(Type *, np > 0 ? np : 1);
+        for (int i = 0; i < np; i++) {
+            es[i] = VEC_AT(&e->list, Expr, i);
+            wt[i] = enum_payload_type(t, e->idx, i);
         }
-        int p = emit_alloc(g, HDR + np * 8, OKIND_SCAN, e->idx, 0);
-        for (int i = 0; i < np && i < e->list.len; i++)
-            emit_store_mem(g, p, HDR + i * 8, vals[i], 8);
-        return p;
+        int *vals = NEWN(int, np > 0 ? np : 1);
+        gen_operands(g, es, wt, np, vals);
+        for (int i = 0; i < np; i++)
+            if (is_float_ty(wt[i])) vals[i] = bitcast_f2i(g, vals[i]);
+        int slots = new_slot(g);
+        int *vs = NEWN(int, np > 0 ? np : 1);
+        for (int i = 0; i < np; i++) { vs[i] = new_slot(g); emit_store_local(g, vs[i], vals[i]); }
+        (void)slots;
+        int p = emit_alloc(g, HDR + enum_payload_count(t, e->idx) * 8, OKIND_SCAN, e->idx, 0);
+        int ps = new_slot(g);
+        emit_store_local(g, ps, p);
+        for (int i = 0; i < np; i++)
+            emit_store_mem(g, emit_load_local(g, ps, 0), HDR + i * 8,
+                           emit_load_local(g, vs[i], 0), 8);
+        return emit_load_local(g, ps, 0);
     }
     int nf = t->fields.len;
-    int *vals = NEWN(int, nf > 0 ? nf : 1);
-    int *has = NEWN(int, nf > 0 ? nf : 1);
-    memset(has, 0, sizeof(int) * (size_t)(nf > 0 ? nf : 1));
+    Expr **es = NEWN(Expr *, nf > 0 ? nf : 1);
+    Type **wt = NEWN(Type *, nf > 0 ? nf : 1);
+    int *idxs = NEWN(int, nf > 0 ? nf : 1);
+    int n = 0;
     for (int i = 0; i < e->list.len; i++) {
         FieldInit *fi = VEC_AT(&e->list, FieldInit, i);
         int idx = struct_field_index(t, fi->name);
         if (idx < 0 || idx >= nf) continue;
-        Type *ft = struct_field_type(t, idx);
-        int v = gen_expr(g, fi->value);
-        v = gen_coerce(g, v, fi->value->type, ft);
-        vals[idx] = is_float_ty(ft) ? bitcast_f2i(g, v) : v;
-        has[idx] = 1;
+        es[n] = fi->value;
+        wt[n] = struct_field_type(t, idx);
+        idxs[n] = idx;
+        n++;
+    }
+    int *vals = NEWN(int, n > 0 ? n : 1);
+    gen_operands(g, es, wt, n, vals);
+    int *vs = NEWN(int, n > 0 ? n : 1);
+    for (int i = 0; i < n; i++) {
+        if (is_float_ty(wt[i])) vals[i] = bitcast_f2i(g, vals[i]);
+        vs[i] = new_slot(g);
+        emit_store_local(g, vs[i], vals[i]);
     }
     int p = emit_alloc(g, HDR + nf * 8, OKIND_SCAN, 0, 0);
-    for (int i = 0; i < nf; i++)
-        if (has[i]) emit_store_mem(g, p, HDR + i * 8, vals[i], 8);
-    return p;
+    int ps = new_slot(g);
+    emit_store_local(g, ps, p);
+    for (int i = 0; i < n; i++)
+        emit_store_mem(g, emit_load_local(g, ps, 0), HDR + idxs[i] * 8,
+                       emit_load_local(g, vs[i], 0), 8);
+    return emit_load_local(g, ps, 0);
 }
 
 static int gen_list_lit(Gen *g, Expr *e) {
     Type *t = e->type;
     int n = e->list.len;
+    Expr **es = NEWN(Expr *, n > 0 ? n : 1);
+    Type **wt = NEWN(Type *, n > 0 ? n : 1);
+    for (int i = 0; i < n; i++) { es[i] = VEC_AT(&e->list, Expr, i); wt[i] = t->elem; }
     int *vals = NEWN(int, n > 0 ? n : 1);
+    gen_operands(g, es, wt, n, vals);
+    int *vs = NEWN(int, n > 0 ? n : 1);
     for (int i = 0; i < n; i++) {
-        Expr *a = VEC_AT(&e->list, Expr, i);
-        int v = gen_expr(g, a);
-        v = gen_coerce(g, v, a->type, t->elem);
-        vals[i] = is_float_ty(t->elem) ? bitcast_f2i(g, v) : v;
+        if (is_float_ty(t->elem)) vals[i] = bitcast_f2i(g, vals[i]);
+        vs[i] = new_slot(g);
+        emit_store_local(g, vs[i], vals[i]);
     }
     int args[2];
     args[0] = emit_const(g, n);
@@ -529,7 +625,7 @@ static int gen_list_lit(Gen *g, Expr *e) {
     int pslot = new_slot(g);
     emit_store_local(g, pslot, p);
     for (int i = 0; i < n; i++) {
-        int a2[2] = { emit_load_local(g, pslot, 0), vals[i] };
+        int a2[2] = { emit_load_local(g, pslot, 0), emit_load_local(g, vs[i], 0) };
         emit_call_n(g, "list_push", a2, 2);
     }
     return emit_load_local(g, pslot, 0);
@@ -547,32 +643,53 @@ static int gen_map_lit(Gen *g, Expr *e) {
         Expr *ke = VEC_AT(&e->list, Expr, i);
         Expr *ve = VEC_AT(&e->list, Expr, i + 1);
         int k = gen_word(g, ke);
+        int ks = new_slot(g);
+        emit_store_local(g, ks, k);
         int v = gen_expr(g, ve);
         v = gen_coerce(g, v, ve->type, t->val);
         if (is_float_ty(t->val)) v = bitcast_f2i(g, v);
-        int a3[3] = { emit_load_local(g, mslot, 0), k, v };
+        int vs = new_slot(g);
+        emit_store_local(g, vs, v);
+        int a3[3] = { emit_load_local(g, mslot, 0), emit_load_local(g, ks, 0),
+                      emit_load_local(g, vs, 0) };
         emit_call_n(g, "map_set", a3, 3);
     }
     return emit_load_local(g, mslot, 0);
 }
 
 static int gen_index(Gen *g, Expr *e) {
-    int a = gen_expr(g, e->a);
+    Expr *es[2] = { e->a, e->b };
+    int v[2];
+    if (e->idx == IDX_MAP) {
+        int branchy = may_branch(e->a) || may_branch(e->b);
+        if (branchy) {
+            int a0 = gen_expr(g, e->a);
+            int s0 = new_slot(g);
+            emit_store_local(g, s0, a0);
+            int k0 = gen_word(g, e->b);
+            int s1 = new_slot(g);
+            emit_store_local(g, s1, k0);
+            v[0] = emit_load_local(g, s0, 0);
+            v[1] = emit_load_local(g, s1, 0);
+        } else {
+            v[0] = gen_expr(g, e->a);
+            v[1] = gen_word(g, e->b);
+        }
+    } else {
+        gen_operands(g, es, NULL, 2, v);
+    }
     if (e->idx == IDX_LIST) {
-        int b = gen_expr(g, e->b);
-        int args[2] = { a, b };
+        int args[2] = { v[0], v[1] };
         int r = emit_call_n(g, "list_get", args, 2);
         if (is_float_ty(e->type)) return bitcast_i2f(g, r);
         return r;
     }
     if (e->idx == IDX_STR) {
-        int b = gen_expr(g, e->b);
-        int args[2] = { a, b };
+        int args[2] = { v[0], v[1] };
         return emit_call_n(g, "str_index", args, 2);
     }
     /* map lookup yields ?V */
-    int k = gen_word(g, e->b);
-    int args[2] = { a, k };
+    int args[2] = { v[0], v[1] };
     int found = emit_call_n(g, "map_find", args, 2);
     int fslot = new_slot(g);
     emit_store_local(g, fslot, found);
@@ -585,13 +702,15 @@ static int gen_index(Gen *g, Expr *e) {
     g->blk = bfound;
     Type *vt = e->a->type->val;
     int addr = emit_load_local(g, fslot, 0);
-    int v = emit_load_mem(g, addr, 0, 0, 8);
+    int val = emit_load_mem(g, addr, 0, 0, 8);
     if (!ty_is_ref(vt)) {
+        int vslot = new_slot(g);
+        emit_store_local(g, vslot, val);
         int p = emit_alloc(g, BOX_SIZE, OKIND_ATOMIC, 0, 0);
-        emit_store_mem(g, p, BOX_VAL, v, 8);
-        v = p;
+        emit_store_mem(g, p, BOX_VAL, emit_load_local(g, vslot, 0), 8);
+        val = p;
     }
-    emit_store_local(g, out, v);
+    emit_store_local(g, out, val);
     emit_jmp(g, bend);
 
     g->blk = bnil;
@@ -867,39 +986,40 @@ static int gen_call(Gen *g, Expr *e) {
                  ? e->a : NULL;
     if (target) {
         int n = e->list.len + (recv ? 1 : 0);
-        int *vals = NEWN(int, n > 0 ? n : 1);
+        Expr **es = NEWN(Expr *, n > 0 ? n : 1);
+        Type **wt = NEWN(Type *, n > 0 ? n : 1);
         int k = 0;
-        if (recv) vals[k++] = gen_expr(g, recv);
+        if (recv) { es[k] = recv; wt[k] = NULL; k++; }
         for (int i = 0; i < e->list.len; i++) {
-            Expr *a = VEC_AT(&e->list, Expr, i);
-            Type *pt = (k < target->param_types.len)
-                       ? VEC_AT(&target->param_types, Type, k) : a->type;
-            int v = gen_expr(g, a);
-            vals[k++] = gen_coerce(g, v, a->type, pt);
+            es[k] = VEC_AT(&e->list, Expr, i);
+            wt[k] = (k < target->param_types.len)
+                    ? VEC_AT(&target->param_types, Type, k) : NULL;
+            k++;
         }
+        int *vals = NEWN(int, n > 0 ? n : 1);
+        gen_operands(g, es, wt, n, vals);
         return emit_call(g, target, vals, n, is_float_ty(e->type));
     }
     /* indirect call through a closure value */
     Expr *ce = callee ? callee : e->a;
-    int cl = gen_expr(g, ce);
-    int cslot = new_slot(g);
-    emit_store_local(g, cslot, cl);
-    Type *ft = ce->type;
     int nargs = e->list.len;
-    int *vals = NEWN(int, nargs > 0 ? nargs : 1);
+    Expr **es = NEWN(Expr *, nargs + 1);
+    Type **wt = NEWN(Type *, nargs + 1);
+    Type *ft = ce->type;
+    es[0] = ce; wt[0] = NULL;
     for (int i = 0; i < nargs; i++) {
-        Expr *a = VEC_AT(&e->list, Expr, i);
-        Type *pt = (ft && ft->kind == TY_FN && i < ft->params.len)
-                   ? VEC_AT(&ft->params, Type, i) : a->type;
-        int v = gen_expr(g, a);
-        vals[i] = gen_coerce(g, v, a->type, pt);
+        es[i + 1] = VEC_AT(&e->list, Expr, i);
+        wt[i + 1] = (ft && ft->kind == TY_FN && i < ft->params.len)
+                    ? VEC_AT(&ft->params, Type, i) : NULL;
     }
-    int env = emit_load_local(g, cslot, 0);
+    int *vals = NEWN(int, nargs + 1);
+    gen_operands(g, es, wt, nargs + 1, vals);
+    int env = vals[0];
     int code = emit_load_mem(g, env, CLOS_CODE, 0, 8);
     IrIns *i = g_ins(g, IR_CALL_IND);
     i->a = code;
     i->b = env;
-    for (int k = 0; k < nargs; k++) vec_push(&i->args, (void *)(intptr_t)vals[k]);
+    for (int k = 0; k < nargs; k++) vec_push(&i->args, (void *)(intptr_t)vals[k + 1]);
     i->dst = new_vreg(g, is_float_ty(e->type));
     return i->dst;
 }
@@ -989,25 +1109,34 @@ static int gen_builtin(Gen *g, Expr *e) {
             Expr *be = VEC_AT(args, Expr, 1);
             Type *t = ae->type;
             int cmp;
+            Expr *pair[2] = { ae, be };
+            int pv[2];
             if (t->kind == TY_FLOAT) {
-                int a = gen_expr(g, ae), b = gen_expr(g, be);
+                gen_operands(g, pair, NULL, 2, pv);
+                int a = pv[0], b = pv[1];
                 IrIns *i = g_ins(g, IR_FEQ);
                 i->dst = new_vreg(g, 0); i->a = a; i->b = b;
                 cmp = i->dst;
             } else if (t->kind == TY_INT || t->kind == TY_BOOL || t->kind == TY_BYTE ||
                        (t->kind == TY_ENUM && t->is_prim)) {
-                int a = gen_expr(g, ae), b = gen_expr(g, be);
+                gen_operands(g, pair, NULL, 2, pv);
+                int a = pv[0], b = pv[1];
                 IrIns *i = g_ins(g, IR_EQ);
                 i->dst = new_vreg(g, 0); i->a = a; i->b = b;
                 cmp = i->dst;
             } else if (t->kind == TY_STR) {
-                int a = gen_expr(g, ae), b = gen_expr(g, be);
-                int x[2] = { a, b };
+                gen_operands(g, pair, NULL, 2, pv);
+                int x[2] = { pv[0], pv[1] };
                 cmp = emit_call_n(g, "str_eq", x, 2);
             } else {
-                int a = gen_word(g, ae), b = gen_word(g, be);
+                int a0 = gen_word(g, ae);
+                int s0 = new_slot(g);
+                emit_store_local(g, s0, a0);
+                int b0 = gen_word(g, be);
+                int s1 = new_slot(g);
+                emit_store_local(g, s1, b0);
                 int d = gen_desc(g, t);
-                int x[3] = { a, b, d };
+                int x[3] = { emit_load_local(g, s0, 0), emit_load_local(g, s1, 0), d };
                 cmp = emit_call_n(g, "any_eq", x, 3);
             }
             int bok = ir_new_block(g->f, "aeq.ok");
@@ -1131,15 +1260,30 @@ static int gen_expr(Gen *g, Expr *e) {
         case E_NIL: return emit_const(g, 0);
         case E_STR: return gen_str_lit(g, e->sval, (int)e->ival);
         case E_INTERP: {
-            int acc = -1;
-            for (int i = 0; i < e->list.len; i++) {
-                Expr *p = VEC_AT(&e->list, Expr, i);
-                int s = gen_to_str(g, p);
-                if (acc < 0) acc = s;
-                else { int x[2] = { acc, s }; acc = emit_call_n(g, "str_concat", x, 2); }
+            int n = e->list.len;
+            if (n == 0) return gen_str_lit(g, "", 0);
+            int branchy = 0;
+            for (int i = 0; i < n; i++)
+                if (may_branch(VEC_AT(&e->list, Expr, i))) branchy = 1;
+            if (!branchy) {
+                int acc = -1;
+                for (int i = 0; i < n; i++) {
+                    int s = gen_to_str(g, VEC_AT(&e->list, Expr, i));
+                    if (acc < 0) acc = s;
+                    else { int x[2] = { acc, s }; acc = emit_call_n(g, "str_concat", x, 2); }
+                }
+                return acc;
             }
-            if (acc < 0) acc = gen_str_lit(g, "", 0);
-            return acc;
+            int accs = new_slot(g);
+            emit_store_local(g, accs, gen_str_lit(g, "", 0));
+            for (int i = 0; i < n; i++) {
+                int s = gen_to_str(g, VEC_AT(&e->list, Expr, i));
+                int ss = new_slot(g);
+                emit_store_local(g, ss, s);
+                int x[2] = { emit_load_local(g, accs, 0), emit_load_local(g, ss, 0) };
+                emit_store_local(g, accs, emit_call_n(g, "str_concat", x, 2));
+            }
+            return emit_load_local(g, accs, 0);
         }
         case E_IDENT: {
             Sym *s = (Sym *)e->sym;
@@ -1192,11 +1336,22 @@ static int gen_expr(Gen *g, Expr *e) {
         case E_METHOD: case E_CALL: return gen_call(g, e);
         case E_INDEX: return gen_index(g, e);
         case E_SLICE: {
-            int a = gen_expr(g, e->a);
-            int lo = e->b ? gen_expr(g, e->b) : emit_const(g, 0);
+            Expr *es[3] = { e->a, e->b, e->c };
+            int n = 1 + (e->b ? 1 : 0) + (e->c ? 1 : 0);
+            Expr *packed[3];
+            int pi = 0;
+            packed[pi++] = e->a;
+            if (e->b) packed[pi++] = e->b;
+            if (e->c) packed[pi++] = e->c;
+            int v[3];
+            gen_operands(g, packed, NULL, n, v);
+            (void)es;
+            int a = v[0];
+            int idx = 1;
+            int lo = e->b ? v[idx++] : emit_const(g, 0);
             int hi;
             if (e->c) {
-                hi = gen_expr(g, e->c);
+                hi = v[idx++];
                 if (e->inclusive) {
                     int one = emit_const(g, 1);
                     IrIns *i = g_ins(g, IR_ADD);
@@ -1208,8 +1363,14 @@ static int gen_expr(Gen *g, Expr *e) {
             return emit_call_n(g, e->idx == IDX_STR ? "str_slice" : "list_slice", x, 3);
         }
         case E_RANGE: {
-            int lo = gen_expr(g, e->a);
-            int hi = e->b ? gen_expr(g, e->b) : emit_const(g, 0);
+            Expr *packed[2];
+            int n = 1;
+            packed[0] = e->a;
+            if (e->b) { packed[1] = e->b; n = 2; }
+            int v[2];
+            gen_operands(g, packed, NULL, n, v);
+            int lo = v[0];
+            int hi = e->b ? v[1] : emit_const(g, 0);
             if (e->inclusive) {
                 int one = emit_const(g, 1);
                 IrIns *i = g_ins(g, IR_ADD);
@@ -1220,9 +1381,11 @@ static int gen_expr(Gen *g, Expr *e) {
             emit_store_local(g, los, lo);
             emit_store_local(g, his, hi);
             int p = emit_alloc(g, HDR + 16, OKIND_ATOMIC, 0, 0);
-            emit_store_mem(g, p, HDR, emit_load_local(g, los, 0), 8);
-            emit_store_mem(g, p, HDR + 8, emit_load_local(g, his, 0), 8);
-            return p;
+            int ps = new_slot(g);
+            emit_store_local(g, ps, p);
+            emit_store_mem(g, emit_load_local(g, ps, 0), HDR, emit_load_local(g, los, 0), 8);
+            emit_store_mem(g, emit_load_local(g, ps, 0), HDR + 8, emit_load_local(g, his, 0), 8);
+            return emit_load_local(g, ps, 0);
         }
         case E_TRY: return gen_try(g, e);
         case E_ORELSE: return gen_orelse(g, e);
@@ -1256,8 +1419,16 @@ static void gen_assign(Gen *g, Stmt *s) {
         if (lhs->kind == E_IDENT) {
             Sym *sy = (Sym *)lhs->sym;
             int cur = gen_load_sym(g, sy);
+            int cs = new_slot(g);
+            emit_store_local(g, cs, cur);
             int r = gen_expr(g, s->b);
-            gen_store_sym(g, sy, compound_combine(g, op, cls, cur, r, sy->type, s->span));
+            int rs = new_slot(g);
+            emit_store_local(g, rs, r);
+            int nv = compound_combine(g, op, cls,
+                                      emit_load_local(g, cs, is_float_ty(sy->type)),
+                                      emit_load_local(g, rs, is_float_ty(sy->type)),
+                                      sy->type, s->span);
+            gen_store_sym(g, sy, nv);
             return;
         }
         if (lhs->kind == E_FIELD) {
@@ -1265,9 +1436,16 @@ static void gen_assign(Gen *g, Stmt *s) {
             int bslot = new_slot(g);
             emit_store_local(g, bslot, base);
             int cur = emit_load_mem(g, base, HDR + lhs->idx * 8, 0, 8);
-            if (is_float_ty(lhs->type)) cur = bitcast_i2f(g, cur);
+            int cs = new_slot(g);
+            emit_store_local(g, cs, cur);
             int r = gen_expr(g, s->b);
-            int nv = compound_combine(g, op, cls, cur, r, lhs->type, s->span);
+            int rs = new_slot(g);
+            emit_store_local(g, rs, r);
+            int c2 = emit_load_local(g, cs, 0);
+            if (is_float_ty(lhs->type)) c2 = bitcast_i2f(g, c2);
+            int nv = compound_combine(g, op, cls, c2,
+                                      emit_load_local(g, rs, is_float_ty(lhs->type)),
+                                      lhs->type, s->span);
             if (is_float_ty(lhs->type)) nv = bitcast_f2i(g, nv);
             emit_store_mem(g, emit_load_local(g, bslot, 0), HDR + lhs->idx * 8, nv, 8);
             return;
@@ -1280,9 +1458,16 @@ static void gen_assign(Gen *g, Stmt *s) {
             emit_store_local(g, is, idx);
             int x[2] = { lst, idx };
             int cur = emit_call_n(g, "list_get", x, 2);
-            if (is_float_ty(lhs->type)) cur = bitcast_i2f(g, cur);
+            int cs = new_slot(g);
+            emit_store_local(g, cs, cur);
             int r = gen_expr(g, s->b);
-            int nv = compound_combine(g, op, cls, cur, r, lhs->type, s->span);
+            int rs = new_slot(g);
+            emit_store_local(g, rs, r);
+            int c2 = emit_load_local(g, cs, 0);
+            if (is_float_ty(lhs->type)) c2 = bitcast_i2f(g, c2);
+            int nv = compound_combine(g, op, cls, c2,
+                                      emit_load_local(g, rs, is_float_ty(lhs->type)),
+                                      lhs->type, s->span);
             if (is_float_ty(lhs->type)) nv = bitcast_f2i(g, nv);
             int y[3] = { emit_load_local(g, ls, 0), emit_load_local(g, is, 0), nv };
             emit_call_n(g, "list_set", y, 3);
@@ -1297,9 +1482,16 @@ static void gen_assign(Gen *g, Stmt *s) {
             int as = new_slot(g);
             emit_store_local(g, as, addr);
             int cur = emit_load_mem(g, addr, 0, 0, 8);
-            if (is_float_ty(vt)) cur = bitcast_i2f(g, cur);
+            int cs = new_slot(g);
+            emit_store_local(g, cs, cur);
             int r = gen_expr(g, s->b);
-            int nv = compound_combine(g, op, cls, cur, r, vt, s->span);
+            int rs = new_slot(g);
+            emit_store_local(g, rs, r);
+            int c2 = emit_load_local(g, cs, 0);
+            if (is_float_ty(vt)) c2 = bitcast_i2f(g, c2);
+            int nv = compound_combine(g, op, cls, c2,
+                                      emit_load_local(g, rs, is_float_ty(vt)),
+                                      vt, s->span);
             if (is_float_ty(vt)) nv = bitcast_f2i(g, nv);
             emit_store_mem(g, emit_load_local(g, as, 0), 0, nv, 8);
             return;

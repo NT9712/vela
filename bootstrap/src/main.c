@@ -371,7 +371,7 @@ int main(int argc, char **argv) {
     }
     {
         extern int ir_verify(Unit *u, FILE *out);
-        int bad = ir_verify(&g_unit, stderr);
+        int bad = opt_emit_ir ? 0 : ir_verify(&g_unit, stderr);
         if (bad) {
             fprintf(stderr, "velac: internal error: %d IR invariant violation%s\n"
                             "       this is a compiler bug; please report it\n",

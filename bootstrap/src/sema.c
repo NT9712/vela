@@ -1586,8 +1586,9 @@ static Type *check_expr(Expr *e, Type *want) {
                     }
                     e->idx = v;
                     e->builtin = -1;
-                    r = et;
-                    break;
+                    e->kind = E_STRUCT;      /* lowered as enum construction */
+                    e->type = et;
+                    return et;
                 }
             }
             Type *recv = check_expr(e->a, NULL);

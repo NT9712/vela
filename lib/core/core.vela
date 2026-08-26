@@ -914,17 +914,34 @@ pub fn int_to_hex(v: Int) -> Str {
 }
 
 fn pow10(k: Int) -> Float {
-    if k >= 0 and k <= 22 {
+    if k < 0 {
+        return 1.0 / pow10(-k)
+    }
+    // 10^0 .. 10^22 are exactly representable; build larger powers by squaring
+    if k <= 22 {
         let mut r = 1.0
         let mut i = 0
-        while i < k { r = r * 10.0; i += 1 }
+        while i < k {
+            r = r * 10.0
+            i += 1
+        }
         return r
     }
-    if k < 0 { return 1.0 / pow10(-k) }
-    let mut r = 1.0
-    let mut i = 0
-    while i < k { r = r * 10.0; i += 1 }
+    let h = pow10(k / 2)
+    let r = h * h
+    if k % 2 == 1 {
+        return r * 10.0
+    }
     return r
+}
+
+/// mant * 10^exp10, computed by division when the exponent is negative so the
+/// result is correctly rounded whenever 10^-exp10 is exactly representable.
+fn scale10(mant: Float, exp10: Int) -> Float {
+    if exp10 >= 0 {
+        return mant * pow10(exp10)
+    }
+    return mant / pow10(-exp10)
 }
 
 fn fabs(x: Float) -> Float { if x < 0.0 { return -x } return x }
@@ -967,7 +984,7 @@ pub fn float_to_str(v: Float) -> Str {
     let mut prec = 1
     let mut done = false
     while prec <= 17 and not done {
-        let scaled = a / pow10(e - prec + 1)
+        let scaled = scale10(a, prec - 1 - e)
         let r = int(scaled + 0.5)
         if round_trips(r, e - prec + 1, a) {
             mant = r
@@ -985,7 +1002,7 @@ pub fn float_to_str(v: Float) -> Str {
 }
 
 fn round_trips(mant: Int, exp10: Int, target: Float) -> Bool {
-    return float(mant) * pow10(exp10) == target
+    return scale10(float(mant), exp10) == target
 }
 
 fn digits_to_str_pretty(mant: Int, e: Int) -> Str {
@@ -1127,7 +1144,7 @@ pub fn parse_float(s: Str) -> ?Float {
     if not seen {
         return nil
     }
-    let mut r = float(mant) * pow10(exp)
+    let mut r = scale10(float(mant), exp)
     if neg {
         r = -r
     }
@@ -1245,7 +1262,10 @@ pub fn any_to_str(w: Int, d: Int) -> Str {
     }
     if k == K_ENUM {
         let prim = @load64(d + TD_AUX) == 1
-        let tag = if_int(prim, w, @load16(w + 6))
+        let mut tag = w
+        if not prim {
+            tag = @load16(w + 6)
+        }
         let nm = @ref[Str](@load64(d + TD_NAME))
         let vn = name_at(d, tag)
         if prim { return nm + "." + vn }
