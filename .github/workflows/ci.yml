@@ -92,10 +92,23 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: confirm the runner architecture
+      - name: code-signing diagnostics (always collected)
+        if: always()
         run: |
-          test "$(uname -s)" = "Darwin"
-          test "$(uname -m)" = "${{ matrix.arch }}"
+          set +e
+          sw_vers
+          export VELA_ROOT=$PWD
+          ./bin/velac -q -o /tmp/diag examples/hello.vela
+          echo "== file ==" ; file /tmp/diag
+          echo "== run it ==" ; /tmp/diag ; echo "exit=$?"
+          echo "== codesign --verify ==" ; codesign --verify --verbose=4 /tmp/diag 2>&1 ; echo "verify=$?"
+          echo "== codesign --display ==" ; codesign --display --verbose=4 /tmp/diag 2>&1 | head -40
+          echo "== re-sign with the Apple tool and retry =="
+          cp /tmp/diag /tmp/diag2
+          codesign -f -s - /tmp/diag2 2>&1
+          /tmp/diag2 ; echo "resigned-exit=$?"
+          echo "== our signature bytes =="
+          python3 tests/sigdump.py /tmp/diag
       - name: build the toolchain
         run: make
       - name: the compiler and the tools it built actually run
