@@ -1,0 +1,230 @@
+// A four-function calculator with a recursive-descent parser.
+//
+//   $ vela run -- "2 * (3 + 4) - 10 / 5"
+//   12
+
+use std/io
+use std/os
+
+enum Tok {
+    Num(Float),
+    Op(Byte),
+    LParen,
+    RParen,
+    End,
+}
+
+struct Lexer {
+    src: Str,
+    i: Int,
+}
+
+fn Lexer.next(self) -> !Tok {
+    while self.i < len(self.src) and self.src[self.i].is_space() {
+        self.i += 1
+    }
+    if self.i >= len(self.src) {
+        return ok(Tok.End)
+    }
+    let c = self.src[self.i]
+    if c == '(' {
+        self.i += 1
+        return ok(Tok.LParen)
+    }
+    if c == ')' {
+        self.i += 1
+        return ok(Tok.RParen)
+    }
+    if c == '+' or c == '-' or c == '*' or c == '/' or c == '%' or c == '^' {
+        self.i += 1
+        return ok(Tok.Op(c))
+    }
+    if c.is_digit() or c == '.' {
+        let start = self.i
+        while self.i < len(self.src) and (self.src[self.i].is_digit() or self.src[self.i] == '.') {
+            self.i += 1
+        }
+        let text = self.src[start..self.i]
+        let v = text.to_float() ?? return err("bad number '{text}'")
+        return ok(Tok.Num(v))
+    }
+    return err("unexpected character '{c.str()}' at offset {self.i}")
+}
+
+struct Parser {
+    lx: Lexer,
+    cur: Tok,
+}
+
+fn parser(src: Str) -> !Parser {
+    let lx = Lexer{ src: src, i: 0 }
+    let first = lx.next()?
+    return ok(Parser{ lx: lx, cur: first })
+}
+
+fn Parser.advance(self) -> !Void {
+    self.cur = self.lx.next()?
+    return ok(void)
+}
+
+/// expression := term (('+' | '-') term)*
+fn Parser.expr(self) -> !Float {
+    let mut v = self.term()?
+    while true {
+        match self.cur {
+            Tok.Op(o) => {
+                if o != '+' and o != '-' {
+                    return ok(v)
+                }
+                self.advance()?
+                let r = self.term()?
+                if o == '+' {
+                    v = v + r
+                } else {
+                    v = v - r
+                }
+            },
+            _ => return ok(v),
+        }
+    }
+    return ok(v)
+}
+
+/// term := power (('*' | '/' | '%') power)*
+fn Parser.term(self) -> !Float {
+    let mut v = self.power()?
+    while true {
+        match self.cur {
+            Tok.Op(o) => {
+                if o != '*' and o != '/' and o != '%' {
+                    return ok(v)
+                }
+                self.advance()?
+                let r = self.power()?
+                if o == '*' {
+                    v = v * r
+                } else if o == '/' {
+                    if r == 0.0 {
+                        return err("division by zero")
+                    }
+                    v = v / r
+                } else {
+                    v = v - (v / r).floor() * r
+                }
+            },
+            _ => return ok(v),
+        }
+    }
+    return ok(v)
+}
+
+/// power := unary ('^' power)?
+fn Parser.power(self) -> !Float {
+    let base = self.unary()?
+    match self.cur {
+        Tok.Op(o) => {
+            if o == '^' {
+                self.advance()?
+                let e = self.power()?
+                return ok(base.pow(int(e)))
+            }
+        },
+        _ => {},
+    }
+    return ok(base)
+}
+
+/// unary := '-' unary | primary
+fn Parser.unary(self) -> !Float {
+    match self.cur {
+        Tok.Op(o) => {
+            if o == '-' {
+                self.advance()?
+                let v = self.unary()?
+                return ok(-v)
+            }
+        },
+        _ => {},
+    }
+    return self.primary()
+}
+
+/// primary := number | '(' expression ')'
+fn Parser.primary(self) -> !Float {
+    return match self.cur {
+        Tok.Num(v) => {
+            self.advance()?
+            ok(v)
+        },
+        Tok.LParen => {
+            self.advance()?
+            let v = self.expr()?
+            match self.cur {
+                Tok.RParen => self.advance()?,
+                _ => return err("expected ')'"),
+            }
+            ok(v)
+        },
+        Tok.End => err("unexpected end of expression"),
+        _ => err("expected a number"),
+    }
+}
+
+/// Evaluate an arithmetic expression.
+pub fn eval(src: Str) -> !Float {
+    let p = parser(src)?
+    let v = p.expr()?
+    match p.cur {
+        Tok.End => return ok(v),
+        _ => return err("trailing input"),
+    }
+}
+
+fn main() -> Int {
+    let argv = os.args()
+    if len(argv) > 1 {
+        let expr = argv[1..len(argv)].join(" ")
+        match eval(expr) {
+            ok(v) => {
+                io.println(str(v))
+                return 0
+            },
+            err(e) => {
+                io.eprintln("error: {e.msg}")
+                return 1
+            },
+        }
+    }
+    io.println("calculator - type an expression, or an empty line to quit")
+    while true {
+        io.print("> ")
+        let line = io.read_line() ?? break
+        if len(line.trim()) == 0 {
+            break
+        }
+        match eval(line) {
+            ok(v) => io.println(str(v)),
+            err(e) => io.eprintln("error: {e.msg}"),
+        }
+    }
+    return 0
+}
+
+test "arithmetic" {
+    assert_eq(eval("1 + 2") ?? 0.0, 3.0)
+    assert_eq(eval("2 * (3 + 4)") ?? 0.0, 14.0)
+    assert_eq(eval("10 / 4") ?? 0.0, 2.5)
+    assert_eq(eval("-3 + 1") ?? 0.0, -2.0)
+    assert_eq(eval("2 ^ 10") ?? 0.0, 1024.0)
+}
+
+test "errors are reported" {
+    match eval("1 +") {
+        ok(_) => panic("expected an error"),
+        err(_) => {},
+    }
+    match eval("1 / 0") {
+        ok(_) => panic("expected an error"),
+        err(e) => assert(e.msg.contains("zero")),
+    }
+}

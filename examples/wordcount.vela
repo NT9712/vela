@@ -1,0 +1,104 @@
+// A file processor: counts lines, words and bytes, and reports the most
+// frequent words. Demonstrates files, maps, sorting and closures.
+//
+//   $ vela run -- README.md
+
+use std/io
+use std/fs
+use std/os
+use std/fmt
+use std/sort
+
+struct Count {
+    word: Str,
+    n: Int,
+}
+
+/// Count word frequencies in `text`, case-insensitively.
+pub fn frequencies(text: Str) -> {Str: Int} {
+    let counts: {Str: Int} = {:}
+    for w in text.lower().words() {
+        let clean = strip_punct(w)
+        if len(clean) == 0 {
+            continue
+        }
+        counts[clean] = (counts[clean] ?? 0) + 1
+    }
+    return counts
+}
+
+fn strip_punct(w: Str) -> Str {
+    let mut a = 0
+    let mut b = len(w)
+    while a < b and not w[a].is_alnum() {
+        a += 1
+    }
+    while b > a and not w[b - 1].is_alnum() {
+        b -= 1
+    }
+    return w[a..b]
+}
+
+/// The `n` most frequent entries, ties broken alphabetically.
+pub fn top(counts: {Str: Int}, n: Int) -> [Count] {
+    let all: [Count] = []
+    for w, c in counts {
+        all.push(Count{ word: w, n: c })
+    }
+    sort.by(all, |a: Count, b: Count| {
+        if a.n != b.n {
+            a.n > b.n
+        } else {
+            a.word < b.word
+        }
+    })
+    if len(all) <= n {
+        return all
+    }
+    return all[0..n]
+}
+
+fn report(name: Str, text: Str) {
+    let lines = text.lines()
+    let words = text.words()
+    io.println("{fmt.pad_right(name, 24)} {fmt.pad_left(str(len(lines)), 8)} lines" +
+               " {fmt.pad_left(str(len(words)), 8)} words" +
+               " {fmt.pad_left(fmt.bytes(len(text)), 10)}")
+    let rows: [[Str]] = [["word", "count"]]
+    for c in top(frequencies(text), 8) {
+        rows.push([c.word, str(c.n)])
+    }
+    io.println("")
+    io.println(fmt.table(rows))
+}
+
+fn main() -> !Void {
+    let argv = os.args()
+    if len(argv) < 2 {
+        io.eprintln("usage: wordcount <file>...")
+        return ok(void)
+    }
+    for i, name in argv {
+        if i == 0 {
+            continue
+        }
+        let text = fs.read_file(name)?
+        report(name, text)
+        io.println("")
+    }
+    return ok(void)
+}
+
+test "word frequencies" {
+    let f = frequencies("the cat, the HAT; the End.")
+    assert_eq(f["the"] ?? 0, 3)
+    assert_eq(f["cat"] ?? 0, 1)
+    assert_eq(f["hat"] ?? 0, 1)
+}
+
+test "top orders by count then alphabetically" {
+    let t = top(frequencies("b b a a c"), 2)
+    assert_eq(t[0].word, "a")
+    assert_eq(t[0].n, 2)
+    assert_eq(t[1].word, "b")
+}

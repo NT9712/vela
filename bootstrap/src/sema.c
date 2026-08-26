@@ -527,6 +527,8 @@ static FnInst *instantiate(Decl *d, Vec *targs, Span sp) {
 static Type *check_expr(Expr *e, Type *want);
 static void check_stmt(Stmt *s);
 static void check_block(Stmt *s, Scope *sc);
+static void check_stmts(Stmt *s, Scope *sc);
+static void warn_unused(Scope *sc);
 
 static int assignable(Type *from, Type *to) {
     if (!from || !to) return 1;
@@ -1840,17 +1842,19 @@ static Type *check_expr(Expr *e, Type *want) {
                     if (g->kind != TY_BOOL) serr(a->guard->span, "match guard must be `Bool`, found `%s`", ty_str_of(g));
                 }
                 if (a->body) {
-                    if (a->block) check_block(a->block, sc);
+                    if (a->block) check_stmts(a->block, sc);
                     Type *bt = check_expr(a->body, res);
                     if (!res) res = bt;
                     else if (!assignable(bt, res) && bt->kind != TY_VOID) {
                         Diag *d = serr(a->body->span, "match arms have incompatible types");
                         diag_note(d, NOSPAN, "expected `%s`, found `%s`", ty_str_of(res), ty_str_of(bt));
                     }
+                    warn_unused(sc);
                 } else {
-                    check_block(a->block, sc);
+                    check_stmts(a->block, sc);
                     is_expr = 0;
                 }
+                warn_unused(sc);
                 cur_fn->scope = save;
             }
             if (e->list.len == 0) {
@@ -2080,17 +2084,27 @@ static Type *check_builtin(Expr *e, int bi, Vec *args, Span sp) {
 /* statements                                                           */
 /* ------------------------------------------------------------------ */
 
+static void warn_unused(Scope *cs) {
+    for (int i = 0; i < cs->nbuckets; i++)
+        for (Sym *sym = cs->buckets[i]; sym; sym = sym->next)
+            if (sym->kind == SYM_LOCAL && !sym->used && sym->name[0] != '_')
+                swarn(sym->span, "unused variable `%s` (prefix with `_` to silence)", sym->name);
+}
+
+static void check_stmts(Stmt *s, Scope *sc) {
+    if (!s) return;
+    Scope *save = cur_fn->scope;
+    cur_fn->scope = sc ? sc : scope_new(save);
+    for (int i = 0; i < s->list.len; i++) check_stmt(VEC_AT(&s->list, Stmt, i));
+    cur_fn->scope = save;
+}
+
 static void check_block(Stmt *s, Scope *sc) {
     if (!s) return;
     Scope *save = cur_fn->scope;
     cur_fn->scope = sc ? sc : scope_new(save);
     for (int i = 0; i < s->list.len; i++) check_stmt(VEC_AT(&s->list, Stmt, i));
-    /* unused-variable warnings */
-    Scope *cs = cur_fn->scope;
-    for (int i = 0; i < cs->nbuckets; i++)
-        for (Sym *sym = cs->buckets[i]; sym; sym = sym->next)
-            if (sym->kind == SYM_LOCAL && !sym->used && sym->name[0] != '_')
-                swarn(sym->span, "unused variable `%s` (prefix with `_` to silence)", sym->name);
+    warn_unused(cur_fn->scope);
     cur_fn->scope = save;
 }
 

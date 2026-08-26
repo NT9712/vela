@@ -365,6 +365,49 @@ static int prec_of(TokKind k) {
     }
 }
 
+/* Rewrite a trailing `if ... else ...` statement into the equivalent `match`
+   expression so that a block used as a value can end in an `if`. In statement
+   position the two forms behave identically, so this is always safe. */
+static Expr *if_to_match(P *p, Stmt *s) {
+    Expr *e = mkexpr(p, E_MATCH, s->span);
+    e->a = s->a;
+    MatchArm *t = NEW(MatchArm);
+    t->span = s->span;
+    t->pat = mkpat(P_BOOL, s->span);
+    t->pat->ival = 1;
+    t->block = s->then_s;
+    vec_push(&e->list, t);
+    MatchArm *f = NEW(MatchArm);
+    f->span = s->span;
+    f->pat = mkpat(P_BOOL, s->span);
+    f->pat->ival = 0;
+    if (s->else_s && s->else_s->kind == S_IF) f->body = if_to_match(p, s->else_s);
+    else f->block = s->else_s;
+    vec_push(&e->list, f);
+    return e;
+}
+
+static void block_tail_to_expr(P *p, Stmt *b) {
+    if (!b || !b->list.len) return;
+    Stmt *last = VEC_AT(&b->list, Stmt, b->list.len - 1);
+    if (last->kind == S_IF && last->else_s) {
+        Expr *m = if_to_match(p, last);
+        Stmt *ns = mkstmt(p, S_EXPR, last->span);
+        ns->a = m;
+        b->list.data[b->list.len - 1] = ns;
+    }
+}
+
+/* In a lambda body the final expression is the value, so
+   `|a, b| { let t = a + b; t * 2 }` needs no `return`. */
+static void block_tail_to_return(P *p, Stmt *b) {
+    block_tail_to_expr(p, b);
+    if (!b || !b->list.len) return;
+    Stmt *last = VEC_AT(&b->list, Stmt, b->list.len - 1);
+    if (last->kind != S_EXPR) return;
+    last->kind = S_RETURN;
+}
+
 static Expr *parse_lambda_short(P *p) {
     /* |a, b| expr    or   || expr */
     Span sp = cur(p)->span;
@@ -382,7 +425,7 @@ static Expr *parse_lambda_short(P *p) {
     }
     expect(p, T_PIPE, "to close lambda parameters");
     if (accept(p, T_ARROW)) e->texpr = parse_type(p);
-    if (at(p, T_LBRACE)) e->body = parse_block(p);
+    if (at(p, T_LBRACE)) { e->body = parse_block(p); block_tail_to_return(p, e->body); }
     else {
         Expr *body = parse_expr(p);
         Stmt *r = mkstmt(p, S_RETURN, body->span);
@@ -416,10 +459,12 @@ static Expr *parse_lambda_fn(P *p) {
     expect(p, T_RPAREN, "to close parameters");
     if (accept(p, T_ARROW)) e->texpr = parse_type(p);
     e->body = parse_block(p);
+    block_tail_to_return(p, e->body);
     return e;
 }
 
 static Expr *parse_match(P *p);
+static Expr *parse_if_expr(P *p);
 
 /* Does a `{` here start a struct literal (vs a block)? Only in a context where
    a struct literal is allowed, which is tracked by p_no_struct. */
@@ -519,7 +564,7 @@ static Expr *parse_primary(P *p) {
             adv(p);
             Expr *e = mkexpr(p, E_LAMBDA, s2);
             if (accept(p, T_ARROW)) e->texpr = parse_type(p);
-            if (at(p, T_LBRACE)) e->body = parse_block(p);
+            if (at(p, T_LBRACE)) { e->body = parse_block(p); block_tail_to_return(p, e->body); }
             else {
                 Expr *body = parse_expr(p);
                 Stmt *r = mkstmt(p, S_RETURN, body->span);
@@ -532,6 +577,7 @@ static Expr *parse_primary(P *p) {
         }
         case T_FN: return parse_lambda_fn(p);
         case T_MATCH: return parse_match(p);
+        case T_IF: return parse_if_expr(p);
         case T_AT: {
             adv(p);
             Tok *id = expect(p, T_IDENT, "as intrinsic name");
@@ -851,6 +897,51 @@ static Expr *parse_expr(P *p) {
     return e;
 }
 
+/* `if c { a } else { b }` used as a value is exactly
+   `match c { true => a, false => b }`, so it is desugared here and the rest of
+   the compiler needs to know nothing about it. */
+static Expr *parse_if_expr(P *p) {
+    Span sp = cur(p)->span;
+    adv(p);
+    Expr *e = mkexpr(p, E_MATCH, sp);
+    int save = p_no_struct; p_no_struct = 1;
+    e->a = parse_expr(p);
+    p_no_struct = save;
+
+    MatchArm *t = NEW(MatchArm);
+    t->span = sp;
+    t->pat = mkpat(P_BOOL, sp);
+    t->pat->ival = 1;
+    t->block = parse_block(p);
+    block_tail_to_expr(p, t->block);
+    vec_push(&e->list, t);
+
+    {
+        int save2 = p->i;
+        while (K(p) == T_NEWLINE) adv(p);
+        if (!at(p, T_ELSE)) p->i = save2;
+    }
+    MatchArm *f = NEW(MatchArm);
+    f->span = sp;
+    f->pat = mkpat(P_BOOL, sp);
+    f->pat->ival = 0;
+    if (accept(p, T_ELSE)) {
+        if (at(p, T_IF)) {
+            f->body = parse_if_expr(p);
+        } else {
+            f->block = parse_block(p);
+            block_tail_to_expr(p, f->block);
+        }
+    } else {
+        Diag *d = perr_d(p, sp, "an `if` used as a value needs an `else` branch");
+        diag_note(d, NOSPAN, "every branch must produce a value; add `else { ... }`");
+        f->block = mkstmt(p, S_BLOCK, sp);
+    }
+    vec_push(&e->list, f);
+    e->span = join(sp, p->t[p->i - 1].span);
+    return e;
+}
+
 static Expr *parse_match(P *p) {
     Span sp = cur(p)->span;
     adv(p);   /* match */
@@ -870,7 +961,7 @@ static Expr *parse_match(P *p) {
             p_no_struct = s2;
         }
         expect(p, T_FATARROW, "after match pattern");
-        if (at(p, T_LBRACE)) arm->block = parse_block(p);
+        if (at(p, T_LBRACE)) { arm->block = parse_block(p); block_tail_to_expr(p, arm->block); }
         else arm->body = parse_expr(p);
         vec_push(&e->list, arm);
         accept(p, T_COMMA);

@@ -244,6 +244,16 @@ fn Lexer.one(self, line: Int, col: Int, bol: Bool) -> !Token {
                 self.errors.push("{line}:{col}: unterminated string literal")
                 break
             }
+            if d == '{' and self.peek(1) == '{' {
+                self.bump()
+                self.bump()
+                continue
+            }
+            if d == '}' and self.peek(1) == '}' {
+                self.bump()
+                self.bump()
+                continue
+            }
             if d == '{' {
                 depth += 1
             }

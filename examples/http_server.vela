@@ -1,0 +1,123 @@
+// A tiny HTTP/1.1 server on raw sockets.
+//
+//   $ vela run -- 8080
+//   $ curl localhost:8080/hello
+//
+// Single-threaded and deliberately small: it exists to show that Vela can talk
+// to the network with nothing but the standard library.
+
+use std/io
+use std/net
+use std/os
+use std/time
+
+struct Request {
+    method: Str,
+    path: Str,
+    headers: {Str: Str},
+}
+
+/// Parse the request line and headers of an HTTP request.
+pub fn parse_request(raw: Str) -> !Request {
+    let head = raw.split("\r\n\r\n")[0]
+    let lines = head.split("\r\n")
+    if len(lines) == 0 {
+        return err("empty request")
+    }
+    let parts = lines[0].words()
+    if len(parts) < 2 {
+        return err("malformed request line '{lines[0]}'")
+    }
+    let headers: {Str: Str} = {:}
+    for i, l in lines {
+        if i == 0 {
+            continue
+        }
+        let c = l.index_of(":")
+        if c > 0 {
+            headers[l[0..c].lower()] = l[c + 1..len(l)].trim()
+        }
+    }
+    return ok(Request{ method: parts[0], path: parts[1], headers: headers })
+}
+
+fn respond(c: net.Conn, status: Int, ctype: Str, body: Str) -> !Void {
+    let reason = status_text(status)
+    let head = "HTTP/1.1 {status} {reason}\r\n" +
+               "Content-Type: {ctype}\r\n" +
+               "Content-Length: {len(body)}\r\n" +
+               "Connection: close\r\n\r\n"
+    c.write(head)?
+    c.write(body)?
+    return ok(void)
+}
+
+fn status_text(s: Int) -> Str {
+    if s == 200 {
+        return "OK"
+    }
+    if s == 404 {
+        return "Not Found"
+    }
+    if s == 400 {
+        return "Bad Request"
+    }
+    return "Unknown"
+}
+
+fn handle(req: Request) -> [Str] {
+    if req.path == "/" {
+        return ["200", "text/html; charset=utf-8",
+                "<!doctype html><title>vela</title>" +
+                "<h1>vela http server</h1><p>try <a href=\"/hello\">/hello</a> " +
+                "or <a href=\"/time\">/time</a>.</p>"]
+    }
+    if req.path == "/hello" {
+        return ["200", "text/plain; charset=utf-8", "hello, world\n"]
+    }
+    if req.path == "/time" {
+        return ["200", "text/plain; charset=utf-8", time.now().to_str() + "\n"]
+    }
+    if req.path.starts_with("/echo/") {
+        return ["200", "text/plain; charset=utf-8", req.path[6..len(req.path)] + "\n"]
+    }
+    return ["404", "text/plain; charset=utf-8", "not found: {req.path}\n"]
+}
+
+fn main() -> !Void {
+    let argv = os.args()
+    let mut port = 8080
+    if len(argv) > 1 {
+        port = argv[1].to_int() ?? 8080
+    }
+    let l = net.listen(port)?
+    io.println("listening on http://127.0.0.1:{port}  (ctrl-c to stop)")
+    while true {
+        let c = l.accept()?
+        let raw = c.read_until("\r\n\r\n")
+        if len(raw) == 0 {
+            c.close()
+            continue
+        }
+        match parse_request(raw) {
+            err(e) => {
+                respond(c, 400, "text/plain", "bad request: {e.msg}\n")?
+            },
+            ok(req) => {
+                let r = handle(req)
+                io.println("{req.method} {req.path} -> {r[0]}")
+                respond(c, r[0].to_int() ?? 500, r[1], r[2])?
+            },
+        }
+        c.close()
+    }
+    return ok(void)
+}
+
+test "request parsing" {
+    let r = parse_request("GET /x HTTP/1.1\r\nHost: a\r\nX-Y: 1\r\n\r\n") ??
+            Request{ method: "", path: "", headers: {:} }
+    assert_eq(r.method, "GET")
+    assert_eq(r.path, "/x")
+    assert_eq(r.headers["host"] ?? "", "a")
+}
