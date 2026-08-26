@@ -1,0 +1,470 @@
+// tools/lsp.vela — a Language Server Protocol server for Vela.
+//
+// Speaks LSP over stdin/stdout and answers with results from the real compiler
+// and the real formatter, so what your editor shows is exactly what `vela check`
+// and `vela fmt` would say.
+//
+// Supported: diagnostics, formatting, hover, go-to-definition, document symbols.
+
+use std/io
+use std/fs
+use std/os
+use std/path
+use std/json
+use std/process
+use ./fmt as vfmt
+
+struct Doc {
+    uri: Str,
+    text: Str,
+}
+
+struct Server {
+    docs: {Str: Str },
+    root: Str,
+    shutdown: Bool,
+}
+
+fn main() -> !Void {
+    let s = Server{ docs: {:}, root: "", shutdown: false }
+    while not s.shutdown {
+        let msg = read_message() ?? break
+        s.handle(msg)?
+    }
+    return ok(void)
+}
+
+// --------------------------------------------------------------- framing
+
+fn read_message() -> ?Str {
+    let mut length = -1
+    while true {
+        let line = io.read_line() ?? return nil
+        let t = line.trim()
+        if len(t) == 0 {
+            break
+        }
+        let low = t.lower()
+        if low.starts_with("content-length:") {
+            length = t[15..len(t)].trim().to_int() ?? -1
+        }
+    }
+    if length <= 0 {
+        return nil
+    }
+    let body = io.read_exact(length)
+    if len(body) == 0 {
+        return nil
+    }
+    return body
+}
+
+fn send(payload: Str) {
+    io.print("Content-Length: {len(payload)}\r\n\r\n")
+    io.print(payload)
+}
+
+fn respond(id: Str, result: Str) {
+    send(obj(["\"jsonrpc\":\"2.0\"", "\"id\":" + id, "\"result\":" + result]))
+}
+
+fn notify(method: Str, params: Str) {
+    send(obj(["\"jsonrpc\":\"2.0\"", "\"method\":" + json_str(method), "\"params\":" + params]))
+}
+
+/// `{ a, b, c }` with the braces the string-interpolation syntax makes awkward
+/// to write inline.
+fn obj(fields: [Str]) -> Str {
+    return "{{" + fields.join(",") + "}}"
+}
+
+fn arr(items: [Str]) -> Str {
+    return "[" + items.join(",") + "]"
+}
+
+fn field(name: Str, value: Str) -> Str {
+    return json_str(name) + ":" + value
+}
+
+fn pos(line: Int, ch: Int) -> Str {
+    return obj([field("line", str(line)), field("character", str(ch))])
+}
+
+fn span(l1: Int, c1: Int, l2: Int, c2: Int) -> Str {
+    return obj([field("start", pos(l1, c1)), field("end", pos(l2, c2))])
+}
+
+// ---------------------------------------------------------------- dispatch
+
+fn Server.handle(self, raw: Str) -> !Void {
+    let msg = json.parse(raw)?
+    let method = msg.get("method")?.as_str() ?? ""
+    let id = raw_id(msg)
+
+    if method == "initialize" {
+        if let r = msg.get("params")?.get("rootUri")?.as_str() {
+            self.root = uri_to_path(r)
+        }
+        respond(id, capabilities())
+        return ok(void)
+    }
+    if method == "initialized" {
+        return ok(void)
+    }
+    if method == "shutdown" {
+        respond(id, "null")
+        return ok(void)
+    }
+    if method == "exit" {
+        self.shutdown = true
+        return ok(void)
+    }
+    if method == "textDocument/didOpen" {
+        let d = msg.get("params")?.get("textDocument")?
+        let uri = d.get("uri")?.as_str() ?? ""
+        self.docs[uri] = d.get("text")?.as_str() ?? ""
+        self.publish(uri)
+        return ok(void)
+    }
+    if method == "textDocument/didChange" {
+        let p = msg.get("params")?
+        let uri = p.get("textDocument")?.get("uri")?.as_str() ?? ""
+        let changes = p.get("contentChanges")?
+        if let c = changes.at(0) {
+            self.docs[uri] = c.get("text")?.as_str() ?? ""
+        }
+        self.publish(uri)
+        return ok(void)
+    }
+    if method == "textDocument/didSave" {
+        let uri = msg.get("params")?.get("textDocument")?.get("uri")?.as_str() ?? ""
+        self.publish(uri)
+        return ok(void)
+    }
+    if method == "textDocument/didClose" {
+        let uri = msg.get("params")?.get("textDocument")?.get("uri")?.as_str() ?? ""
+        self.docs.delete(uri)
+        notify("textDocument/publishDiagnostics", obj([field("uri", json_str(uri)), field("diagnostics", "[]")]))
+        return ok(void)
+    }
+    if method == "textDocument/formatting" {
+        let uri = msg.get("params")?.get("textDocument")?.get("uri")?.as_str() ?? ""
+        let src = self.docs[uri] ?? ""
+        match vfmt.format(src) {
+            err(_) => respond(id, "null"),
+            ok(out) => {
+                if out == src {
+                    respond(id, "[]")
+                } else {
+                    let nlines = len(src.lines()) + 2
+                    let edit = obj([field("range", span(0, 0, nlines, 0)), field("newText", json_str(out))])
+                    respond(id, arr([edit]))
+                }
+            },
+        }
+        return ok(void)
+    }
+    if method == "textDocument/hover" {
+        let p = msg.get("params")?
+        let uri = p.get("textDocument")?.get("uri")?.as_str() ?? ""
+        let line = p.get("position")?.get("line")?.as_int() ?? 0
+        let col = p.get("position")?.get("character")?.as_int() ?? 0
+        let src = self.docs[uri] ?? ""
+        let info = hover_at(src, line, col)
+        if len(info) == 0 {
+            respond(id, "null")
+        } else {
+            let contents = obj([field("kind", json_str("markdown")), field("value", json_str(info))])
+            respond(id, obj([field("contents", contents)]))
+        }
+        return ok(void)
+    }
+    if method == "textDocument/definition" {
+        let p = msg.get("params")?
+        let uri = p.get("textDocument")?.get("uri")?.as_str() ?? ""
+        let line = p.get("position")?.get("line")?.as_int() ?? 0
+        let col = p.get("position")?.get("character")?.as_int() ?? 0
+        let src = self.docs[uri] ?? ""
+        let word = word_at(src, line, col)
+        let target = find_decl_line(src, word)
+        if target < 0 {
+            respond(id, "null")
+        } else {
+            respond(id, obj([field("uri", json_str(uri)), field("range", span(target, 0, target, 0))]))
+        }
+        return ok(void)
+    }
+    if method == "textDocument/documentSymbol" {
+        let uri = msg.get("params")?.get("textDocument")?.get("uri")?.as_str() ?? ""
+        respond(id, symbols(self.docs[uri] ?? ""))
+        return ok(void)
+    }
+    if len(id) > 0 {
+        respond(id, "null")
+    }
+    return ok(void)
+}
+
+fn capabilities() -> Str {
+    let caps = obj([field("textDocumentSync", "1"), field("documentFormattingProvider", "true"), field("hoverProvider", "true"), field("definitionProvider", "true"), field("documentSymbolProvider", "true")])
+    let info = obj([field("name", json_str("vela-lsp")), field("version", json_str("1.0.0"))])
+    return obj([field("capabilities", caps), field("serverInfo", info)])
+}
+
+// ------------------------------------------------------------- diagnostics
+
+fn Server.publish(self, uri: Str) {
+    let src = self.docs[uri] ?? ""
+    let tmp = "/tmp/vela-lsp-{os.pid()}.vela"
+    fs.write_file(tmp, src) ?? void
+    let vc = velac_path()
+    let out = process.run([vc, "--no-color", "--check", tmp]) ??
+        process.Output{ status: 0, stdout: "", stderr: "" }
+    fs.remove(tmp) ?? void
+    let diags = parse_diagnostics(out.stderr + out.stdout, tmp)
+    notify("textDocument/publishDiagnostics", obj([field("uri", json_str(uri)), field("diagnostics", arr(diags))]))
+}
+
+/// Turn velac's rendered output back into LSP diagnostic objects.
+fn parse_diagnostics(text: Str, _file: Str) -> [Str] {
+    let out: [Str] = []
+    let lines = text.lines()
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        let mut severity = 0
+        if l.starts_with("error: ") {
+            severity = 1
+        } else if l.starts_with("warning: ") {
+            severity = 2
+        }
+        if severity == 0 {
+            i += 1
+            continue
+        }
+        let msg = l[l.index_of(":") + 2..len(l)]
+        let mut line = 0
+        let mut col = 0
+        if i + 1 < len(lines) {
+            let loc = lines[i + 1].trim()
+            if loc.starts_with("--> ") {
+                let parts = loc[4..len(loc)].split(":")
+                if len(parts) >= 3 {
+                    line = (parts[len(parts) - 2].to_int() ?? 1) - 1
+                    col = (parts[len(parts) - 1].to_int() ?? 1) - 1
+                }
+            }
+        }
+        if line < 0 {
+            line = 0
+        }
+        if col < 0 {
+            col = 0
+        }
+        out.push(obj([field("range", span(line, col, line, col + 1)), field("severity", str(severity)), field("source", json_str("vela")), field("message", json_str(msg))]))
+        i += 1
+    }
+    return out
+}
+
+// ------------------------------------------------------------ hover/symbols
+
+fn hover_at(src: Str, line: Int, col: Int) -> Str {
+    let word = word_at(src, line, col)
+    if len(word) == 0 {
+        return ""
+    }
+    let lines = src.lines()
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if is_decl_of(l, word) {
+            let mut doc = ""
+            let mut j = i - 1
+            let docs: [Str] = []
+            while j >= 0 and lines[j].trim().starts_with("///") {
+                docs.insert(0, lines[j].trim()[3..len(lines[j].trim())].trim())
+                j -= 1
+            }
+            if len(docs) > 0 {
+                doc = "\n\n" + docs.join("\n")
+            }
+            let sig = l.replace(" {{", "")
+            return "```vela\n{sig}\n```{doc}"
+        }
+        i += 1
+    }
+    return ""
+}
+
+fn find_decl_line(src: Str, word: Str) -> Int {
+    if len(word) == 0 {
+        return -1
+    }
+    let lines = src.lines()
+    for i, l in lines {
+        if is_decl_of(l.trim(), word) {
+            return i
+        }
+    }
+    return -1
+}
+
+fn is_decl_of(l: Str, word: Str) -> Bool {
+    let heads = ["fn ", "pub fn ", "struct ", "pub struct ", "enum ", "pub enum ", "const ", "pub const ", "type ", "pub type "]
+    for h in heads {
+        if l.starts_with(h) {
+            let rest = l[len(h)..len(l)]
+            if rest.starts_with(word) {
+                let after = rest[len(word)..len(rest)]
+                if len(after) == 0 or after.starts_with("(") or after.starts_with(" ") or
+                    after.starts_with("[") or after.starts_with(":") or after.starts_with(".") {
+                    return true
+                }
+            }
+            // methods: `fn Type.name(`
+            let dot = rest.index_of(".")
+            if dot > 0 and rest[dot + 1..len(rest)].starts_with(word) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+fn word_at(src: Str, line: Int, col: Int) -> Str {
+    let lines = src.lines()
+    if line < 0 or line >= len(lines) {
+        return ""
+    }
+    let l = lines[line]
+    if col < 0 or col >= len(l) {
+        return ""
+    }
+    let mut a = col
+    let mut b = col
+    while a > 0 and is_word(l[a - 1]) {
+        a -= 1
+    }
+    while b < len(l) and is_word(l[b]) {
+        b += 1
+    }
+    return l[a..b]
+}
+
+fn is_word(c: Byte) -> Bool {
+    return c.is_alnum() or c == '_'
+}
+
+fn symbols(src: Str) -> Str {
+    let out: [Str] = []
+    let lines = src.lines()
+    for i, l in lines {
+        let t = l.trim()
+        let kind = symbol_kind(t)
+        if kind == 0 {
+            continue
+        }
+        let name = decl_name(t)
+        if len(name) == 0 {
+            continue
+        }
+        out.push(obj([field("name", json_str(name)), field("kind", str(kind)), field("range", span(i, 0, i, len(l))), field("selectionRange", span(i, 0, i, len(l)))]))
+    }
+    return arr(out)
+}
+
+fn symbol_kind(l: Str) -> Int {
+    if l.starts_with("fn ") or l.starts_with("pub fn ") {
+        return 12
+    }
+    if l.starts_with("struct ") or l.starts_with("pub struct ") {
+        return 23
+    }
+    if l.starts_with("enum ") or l.starts_with("pub enum ") {
+        return 10
+    }
+    if l.starts_with("const ") or l.starts_with("pub const ") {
+        return 14
+    }
+    if l.starts_with("type ") or l.starts_with("pub type ") {
+        return 5
+    }
+    return 0
+}
+
+fn decl_name(l: Str) -> Str {
+    let mut rest = l
+    if rest.starts_with("pub ") {
+        rest = rest[4..len(rest)]
+    }
+    let sp = rest.index_of(" ")
+    if sp < 0 {
+        return ""
+    }
+    rest = rest[sp + 1..len(rest)]
+    let mut i = 0
+    while i < len(rest) and (is_word(rest[i]) or rest[i] == '.') {
+        i += 1
+    }
+    return rest[0..i]
+}
+
+// ------------------------------------------------------------------ helpers
+
+fn raw_id(msg: json.Json) -> Str {
+    if let v = msg.get("id") {
+        if let n = v.as_int() {
+            return str(n)
+        }
+        if let s = v.as_str() {
+            return "\"{s}\""
+        }
+    }
+    return ""
+}
+
+fn json_str(s: Str) -> Str {
+    let mut out = "\""
+    for c in s {
+        if c == '"' {
+            out = out + "\\\""
+        } else if c == '\\' {
+            out = out + "\\\\"
+        } else if c == '\n' {
+            out = out + "\\n"
+        } else if c == '\r' {
+            out = out + "\\r"
+        } else if c == '\t' {
+            out = out + "\\t"
+        } else if int(c) < 32 {
+            out = out + "\\u00" + hex2(int(c))
+        } else {
+            out = out + c.str()
+        }
+    }
+    return out + "\""
+}
+
+fn hex2(v: Int) -> Str {
+    let d = "0123456789abcdef"
+    return d[v / 16..v / 16 + 1] + d[v % 16..v % 16 + 1]
+}
+
+fn uri_to_path(uri: Str) -> Str {
+    if uri.starts_with("file://") {
+        return uri[7..len(uri)]
+    }
+    return uri
+}
+
+fn velac_path() -> Str {
+    if let v = os.getenv("VELAC") {
+        return v
+    }
+    let cand = path.join([path.dir(os.exe_path()), "velac"])
+    if fs.exists(cand) {
+        return cand
+    }
+    return process.which("velac") ?? "velac"
+}

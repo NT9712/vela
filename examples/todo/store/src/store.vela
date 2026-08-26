@@ -1,0 +1,153 @@
+// store — persistence for the todo application.
+//
+// A separate package, depended on through `vela.toml`. It knows how to read and
+// write a list of tasks as JSON and nothing about the command line.
+
+use std/fs
+use std/json
+
+/// One task.
+pub struct Task {
+    id: Int,
+    title: Str,
+    done: Bool,
+    tags: [Str],
+}
+
+/// A whole task list, with the next free identifier.
+pub struct Store {
+    path: Str,
+    tasks: [Task],
+    next_id: Int,
+}
+
+/// Load a store, returning an empty one when the file does not exist.
+pub fn load(path: Str) -> !Store {
+    if not fs.exists(path) {
+        return ok(Store{ path: path, tasks: [], next_id: 1 })
+    }
+    let text = fs.read_file(path)?
+    let doc = json.parse(text)?
+    let tasks: [Task] = []
+    let mut maxid = 0
+    let items = doc.get("tasks") ?? json.Json.List([])
+    match items {
+        json.Json.List(xs) => {
+            for x in xs {
+                let id = x.get("id")?.as_int() ?? 0
+                let tags: [Str] = []
+                if let tl = x.get("tags") {
+                    match tl {
+                        json.Json.List(ts) => {
+                            for t in ts {
+                                tags.push(t.as_str() ?? "")
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+                tasks.push(Task{ id: id, title: x.get("title")?.as_str() ?? "", done: x.get("done")?.as_bool() ?? false, tags: tags, })
+                if id > maxid {
+                    maxid = id
+                }
+            }
+        },
+        _ => {},
+    }
+    return ok(Store{ path: path, tasks: tasks, next_id: maxid + 1 })
+}
+
+/// Write the store back to disk as pretty-printed JSON.
+pub fn Store.save(self) -> !Void {
+    let items: [json.Json] = []
+    for t in self.tasks {
+        let tags: [json.Json] = []
+        for g in t.tags {
+            tags.push(json.Json.Str(g))
+        }
+        let m: {Str: json.Json } = {:}
+        m["id"] = json.Json.Num(float(t.id))
+        m["title"] = json.Json.Str(t.title)
+        m["done"] = json.Json.Bool(t.done)
+        m["tags"] = json.Json.List(tags)
+        items.push(json.Json.Obj(m))
+    }
+    let root: {Str: json.Json } = {:}
+    root["tasks"] = json.Json.List(items)
+    fs.write_file(self.path, json.Json.Obj(root).pretty() + "\n")?
+    return ok(void)
+}
+
+/// Append a task and return its identifier.
+pub fn Store.add(self, title: Str, tags: [Str]) -> Int {
+    let id = self.next_id
+    self.tasks.push(Task{ id: id, title: title, done: false, tags: tags })
+    self.next_id = id + 1
+    return id
+}
+
+/// Mark a task done. False when there is no such task.
+pub fn Store.complete(self, id: Int) -> Bool {
+    for t in self.tasks {
+        if t.id == id {
+            t.done = true
+            return true
+        }
+    }
+    return false
+}
+
+/// Remove a task. False when there is no such task.
+pub fn Store.remove(self, id: Int) -> Bool {
+    for i, t in self.tasks {
+        if t.id == id {
+            self.tasks.remove(i)
+            return true
+        }
+    }
+    return false
+}
+
+/// Tasks carrying `tag`, or all tasks when `tag` is empty.
+pub fn Store.filter_tag(self, tag: Str) -> [Task] {
+    if len(tag) == 0 {
+        return self.tasks
+    }
+    return self.tasks.filter(| t | t.tags.contains(tag))
+}
+
+/// How many tasks are done.
+pub fn Store.done_count(self) -> Int {
+    return len(self.tasks.filter(| t | t.done))
+}
+
+test "add, complete and remove" {
+    let s = Store{ path: "/tmp/none", tasks: [], next_id: 1 }
+    let a = s.add("write docs", ["work"])
+    let b = s.add("buy milk", ["home"])
+    assert_eq(a, 1)
+    assert_eq(b, 2)
+    assert_eq(len(s.tasks), 2)
+    assert(s.complete(1))
+    assert(not s.complete(99))
+    assert_eq(s.done_count(), 1)
+    assert_eq(len(s.filter_tag("home")), 1)
+    assert(s.remove(2))
+    assert_eq(len(s.tasks), 1)
+}
+
+test "round trip through json" {
+    let p = "/tmp/vela-todo-test.json"
+    let s = Store{ path: p, tasks: [], next_id: 1 }
+    s.add("alpha", ["x", "y"])
+    s.add("beta", [])
+    s.complete(1)
+    s.save()?
+    let t = load(p)?
+    assert_eq(len(t.tasks), 2)
+    assert_eq(t.tasks[0].title, "alpha")
+    assert(t.tasks[0].done)
+    assert_eq(t.tasks[0].tags, ["x", "y"])
+    assert_eq(t.next_id, 3)
+    fs.remove(p)?
+}

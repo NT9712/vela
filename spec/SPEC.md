@@ -74,6 +74,8 @@ struct test   true   type   use       while
 
 Integer literals are 64-bit signed. `_` may separate digits anywhere except at
 the start. Escapes in strings and chars: `\n \r \t \\ \" \' \0 \xHH \{`.
+Strings also accept `\u{H..H}`, which inserts the UTF-8 encoding of a Unicode
+code point (1 to 6 hex digits).
 
 **String interpolation.** Inside a `"..."` literal, `{expr}` splices the value of
 `expr`, converted with `str(...)`. `\{` produces a literal `{`. A `}` outside an

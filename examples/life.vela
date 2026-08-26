@@ -1,0 +1,170 @@
+// Conway's Game of Life on a toroidal board.
+//
+//   vela run -- 30 20 40        width height generations
+//
+// Shows nested lists, a struct with methods, string building and terminal
+// output. Deterministic: the same seed always produces the same run.
+
+use std/io
+use std/os
+use std/rand
+use std/time
+
+pub struct Board {
+    w: Int,
+    h: Int,
+    cells: [Bool],
+}
+
+/// An empty board.
+pub fn board(w: Int, h: Int) -> Board {
+    let cells: [Bool] = []
+    for _i in 0..w * h {
+        cells.push(false)
+    }
+    return Board{ w: w, h: h, cells: cells }
+}
+
+pub fn Board.get(self, x: Int, y: Int) -> Bool {
+    let cx = ((x % self.w) + self.w) % self.w
+    let cy = ((y % self.h) + self.h) % self.h
+    return self.cells[cy * self.w + cx]
+}
+
+pub fn Board.set(self, x: Int, y: Int, v: Bool) {
+    let cx = ((x % self.w) + self.w) % self.w
+    let cy = ((y % self.h) + self.h) % self.h
+    self.cells[cy * self.w + cx] = v
+}
+
+/// Live neighbours of a cell, wrapping at the edges.
+pub fn Board.neighbours(self, x: Int, y: Int) -> Int {
+    let mut n = 0
+    for dy in -1..= 1 {
+        for dx in -1..= 1 {
+            if dx == 0 and dy == 0 {
+                continue
+            }
+            if self.get(x + dx, y + dy) {
+                n += 1
+            }
+        }
+    }
+    return n
+}
+
+/// One generation of B3/S23.
+pub fn Board.step(self) -> Board {
+    let next = board(self.w, self.h)
+    for y in 0..self.h {
+        for x in 0..self.w {
+            let n = self.neighbours(x, y)
+            let alive = self.get(x, y)
+            let born = if alive{n == 2 or n == 3 } else {n == 3 }
+            next.set(x, y, born)
+        }
+    }
+    return next
+}
+
+pub fn Board.living(self) -> Int {
+    let mut n = 0
+    for c in self.cells {
+        if c {
+            n += 1
+        }
+    }
+    return n
+}
+
+pub fn Board.to_str(self) -> Str {
+    let rows: [Str] = []
+    for y in 0..self.h {
+        let mut line = ""
+        for x in 0..self.w {
+            line = line + if self.get(x, y){"\u{2588}" } else {" " }
+        }
+        rows.push(line)
+    }
+    return rows.join("\n")
+}
+
+/// A glider at (x, y).
+pub fn Board.glider(self, x: Int, y: Int) {
+    self.set(x + 1, y + 0, true)
+    self.set(x + 2, y + 1, true)
+    self.set(x + 0, y + 2, true)
+    self.set(x + 1, y + 2, true)
+    self.set(x + 2, y + 2, true)
+}
+
+fn main() {
+    let argv = os.args()
+    let w = if len(argv) > 1{argv[1].to_int() ?? 40 } else {40 }
+    let h = if len(argv) > 2{argv[2].to_int() ?? 20 } else {20 }
+    let gens = if len(argv) > 3{argv[3].to_int() ?? 40 } else {40 }
+
+    let b0 = board(w, h)
+    b0.glider(1, 1)
+    rand.seed(1729)
+    for _i in 0..(w * h) / 6 {
+        b0.set(rand.int_below(w), rand.int_below(h), true)
+    }
+
+    let mut b = b0
+    let start = time.mono_ns()
+    for g in 0..gens {
+        io.print("\x1b[H\x1b[2J")
+        io.println("generation {g + 1}/{gens}   living {b.living()}")
+        io.println(b.to_str())
+        b = b.step()
+        os.sleep_ms(60)
+    }
+    let el = time.mono_ns() - start
+    io.println("{gens} generations of {w}x{h} in {time.duration_str(el)}")
+}
+
+test "a block is stable" {
+    let b = board(6, 6)
+    b.set(1, 1, true)
+    b.set(1, 2, true)
+    b.set(2, 1, true)
+    b.set(2, 2, true)
+    let n = b.step()
+    assert_eq(n.living(), 4)
+    assert(n.get(1, 1))
+    assert(n.get(2, 2))
+}
+
+test "a blinker oscillates with period two" {
+    let b = board(6, 6)
+    b.set(1, 2, true)
+    b.set(2, 2, true)
+    b.set(3, 2, true)
+    let a = b.step()
+    assert(a.get(2, 1))
+    assert(a.get(2, 2))
+    assert(a.get(2, 3))
+    assert_eq(a.living(), 3)
+    let c = a.step()
+    assert(c.get(1, 2))
+    assert(c.get(3, 2))
+}
+
+test "a glider moves" {
+    let b = board(12, 12)
+    b.glider(0, 0)
+    let mut g = b
+    for _i in 0..4 {
+        g = g.step()
+    }
+    assert_eq(g.living(), 5)
+    assert(g.get(2, 3))
+}
+
+test "neighbours wrap" {
+    let b = board(4, 4)
+    b.set(0, 0, true)
+    b.set(3, 3, true)
+    assert_eq(b.neighbours(0, 0), 1)
+}

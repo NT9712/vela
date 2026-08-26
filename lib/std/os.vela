@@ -43,7 +43,7 @@ pub fn env() -> {Str: Str } {
 }
 
 /// The value of an environment variable.
-pub fn getenv(name: Str) -> ? Str {
+pub fn getenv(name: Str) -> ?Str {
     let e = @envp()
     let mut i = 0
     let prefix = name + "="

@@ -340,7 +340,10 @@ fn cmd_run(rest: [Str]) -> !Int {
         return ok(code)
     }
     let args: [Str] = [out]
-    for a in rest {
+    for i, a in rest {
+        if i == 0 and a == "--" {
+            continue
+        }
         args.push(a)
     }
     return process.spawn(args)

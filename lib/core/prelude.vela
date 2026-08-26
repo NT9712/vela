@@ -24,7 +24,7 @@ pub fn List[T].pop(self) -> T {
 }
 
 /// First element, or nil when empty.
-pub fn List[T].first(self) -> ? T {
+pub fn List[T].first(self) -> ?T {
     if self.len() == 0 {
         return nil
     }
@@ -32,7 +32,7 @@ pub fn List[T].first(self) -> ? T {
 }
 
 /// Last element, or nil when empty.
-pub fn List[T].last(self) -> ? T {
+pub fn List[T].last(self) -> ?T {
     let n = self.len()
     if n == 0 {
         return nil
@@ -149,7 +149,7 @@ pub fn List[T].contains(self, v: T) -> Bool {
 }
 
 /// The first element satisfying `f`, or nil.
-pub fn List[T].find(self, f: fn(T) -> Bool) -> ? T {
+pub fn List[T].find(self, f: fn(T) -> Bool) -> ?T {
     for x in self {
         if f(x) {
             return x
@@ -196,14 +196,14 @@ fn sift_down[T](xs: [T], root: Int, end: Int, less: fn(T, T) -> Bool) {
 
 /// Join the elements with `sep` between them.
 pub fn List[T].join(self, sep: Str) -> Str {
-    let mut r = ""
+    let b = core.buf()
     for i, x in self {
         if i > 0 {
-            r = r + sep
+            b.push(sep)
         }
-        r = r + str(x)
+        b.push(str(x))
     }
-    return r
+    return b.str()
 }
 
 // ----------------------------------------------------------------------- Map
@@ -436,13 +436,16 @@ pub fn Str.replace(self, from: Str, to: Str) -> Str {
 
 /// The string repeated `n` times.
 pub fn Str.repeat(self, n: Int) -> Str {
-    let mut r = ""
+    if n <= 0 {
+        return ""
+    }
+    let b = core.buf_with(len(self) * n)
     let mut i = 0
     while i < n {
-        r = r + self
+        b.push(self)
         i += 1
     }
-    return r
+    return b.str()
 }
 
 /// Byte at index `i`.
@@ -460,12 +463,12 @@ pub fn Str.bytes(self) -> [Byte] {
 }
 
 /// Parse as a decimal integer.
-pub fn Str.to_int(self) -> ? Int {
+pub fn Str.to_int(self) -> ?Int {
     return core.parse_int(self)
 }
 
 /// Parse as a floating-point number.
-pub fn Str.to_float(self) -> ? Float {
+pub fn Str.to_float(self) -> ?Float {
     return core.parse_float(self)
 }
 

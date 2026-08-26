@@ -23,8 +23,8 @@ fn main() {
     println("{ks} {len(m)} {m.has("a")}")
     println("{Point{ x: 1.0, y: 2.0 }}")
     println("{Color.Green} {Shape.Rect(2.0, 3.0)}")
-    let a: ? Int = nil
-    let b: ? Int = 5
+    let a: ?Int = nil
+    let b: ?Int = 5
     println("{a} {b ?? 0} {(a ?? 7)}")
     println("{ok(9)} {err("boom")}")
     println("{sum(10)} {fact(5)}")

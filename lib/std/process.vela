@@ -120,7 +120,7 @@ pub fn spawn(args: [Str]) -> !Int {
 }
 
 /// Look `name` up on PATH. Returns the absolute path, or nil.
-pub fn which(name: Str) -> ? Str {
+pub fn which(name: Str) -> ?Str {
     if name.contains("/") {
         return name
     }

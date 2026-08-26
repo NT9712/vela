@@ -67,6 +67,12 @@ static void normalize(char *p) {
     strcpy(p, out[0] ? out : ".");
 }
 
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
 Module *load_module(const char *modpath, const char *fromfile, Span sp) {
     if (!modpath || !*modpath) return NULL;
     /* already loaded? */
@@ -148,8 +154,14 @@ Module *load_module(const char *modpath, const char *fromfile, Span sp) {
 
     TokList tl;
     memset(&tl, 0, sizeof tl);
+    double _t0 = now_ms();
     lex_file(sf, &tl);
+    double _t1 = now_ms();
     parse_module(&tl, sf, m);
+    double _t2 = now_ms();
+    if (getenv("VELA_TIME_MODULES"))
+        fprintf(stderr, "  %-28s lex %6.1f  parse %6.1f  toks %6d\n",
+                m->modpath, _t1 - _t0, _t2 - _t1, tl.n);
     free(tl.toks);
 
     /* eagerly load imports so cycles are reported with a useful message */
@@ -165,11 +177,7 @@ Module *load_module(const char *modpath, const char *fromfile, Span sp) {
 /* driver                                                               */
 /* ------------------------------------------------------------------ */
 
-static double now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
-}
+
 
 static void usage(FILE *o) {
     fprintf(o,

@@ -60,6 +60,9 @@ const RT_TESTS_RUN: Int = 328
 const RT_TESTS_FAIL: Int = 336
 const RT_TEST_NAME: Int = 344
 const RT_NGLOBALS: Int = 360
+const RT_IN_BUF: Int = 368
+const RT_IN_LEN: Int = 376
+const RT_IN_POS: Int = 384
 const RT_GLOBALS: Int = 512
 
 fn rt() -> Int {
@@ -82,11 +85,12 @@ const CH_MAGIC: Int = 0
 const CH_CLASS: Int = 8
 const CH_OBJSIZE: Int = 16
 const CH_NOBJ: Int = 24
+const CH_SHIFT: Int = 48
 const CH_ALLOC_BM: Int = 64
 const CH_MARK_BM: Int = 576
 
-const NCLASS: Int = 21
-const MAX_SMALL: Int = 3328
+const NCLASS: Int = 11
+const MAX_SMALL: Int = 16384
 
 const KIND_ATOMIC: Int = 0
 const KIND_SCAN: Int = 1
@@ -94,46 +98,37 @@ const KIND_SCAN: Int = 1
 const HEAP_RESERVE: Int = 1073741824
 const MARKSTACK_BYTES: Int = 8388608
 
+/// Size classes are powers of two from 16 to 16384. That costs a little
+/// internal fragmentation and buys an allocator with no integer division on
+/// the fast path, which is worth far more.
 pub fn class_size(c: Int) -> Int {
-    if c < 8 {
-        return (c + 1) * 16
-    }
-    if c < 12 {
-        return 128 + (c - 7) * 32
-    }
-    if c < 16 {
-        return 256 + (c - 11) * 128
-    }
-    return 768 + (c - 15) * 512
+    return 16 << c
 }
 
 fn size_class(n: Int) -> Int {
-    if n <= 128 {
-        return (n + 15) / 16 - 1
+    if n > MAX_SMALL {
+        return -1
     }
-    if n <= 256 {
-        return 7 + (n - 128 + 31) / 32
+    let mut c = 0
+    let mut sz = 16
+    while sz < n {
+        sz = sz << 1
+        c += 1
     }
-    if n <= 768 {
-        return 11 + (n - 256 + 127) / 128
-    }
-    if n <= MAX_SMALL {
-        return 15 + (n - 768 + 511) / 512
-    }
-    return -1
+    return c
 }
 
 fn bm_get(bm: Int, i: Int) -> Bool {
-    let b = @load8(bm + i / 8)
-    return (b >> (i % 8)) % 2 == 1
+    let b = @load8(bm + (i >> 3))
+    return ((b >> (i & 7)) & 1) == 1
 }
 fn bm_set(bm: Int, i: Int) {
-    let a = bm + i / 8
-    @store8(a, @load8(a) | (1 << (i % 8)))
+    let a = bm + (i >> 3)
+    @store8(a, @load8(a) | (1 << (i & 7)))
 }
 fn bm_clear(bm: Int, i: Int) {
-    let a = bm + i / 8
-    @store8(a, @load8(a) & (~(1 << (i % 8)) & 255))
+    let a = bm + (i >> 3)
+    @store8(a, @load8(a) & (~(1 << (i & 7)) & 255))
 }
 
 fn mzero(p: Int, n: Int) {
@@ -221,6 +216,7 @@ fn grow_class(c: Int) {
     @store64(ch + CH_CLASS, c)
     @store64(ch + CH_OBJSIZE, osz)
     @store64(ch + CH_NOBJ, nobj)
+    @store64(ch + CH_SHIFT, 4 + c)
     mzero(ch + CH_ALLOC_BM, 1024)
     // thread every object of the new chunk onto the class free list
     let mut head = @load64(rt() + RT_CLASSES + c * 8)
@@ -259,6 +255,7 @@ fn alloc_large(size: Int, kind: Int) -> Int {
     @store64(ch + CH_MAGIC, CHUNK_MAGIC)
     @store64(ch + CH_CLASS, -1)
     @store64(ch + CH_OBJSIZE, size)
+    @store64(ch + CH_SHIFT, 0)
     mzero(ch + CH_ALLOC_BM, 1024)
     bm_set(ch + CH_ALLOC_BM, 0)
     let o = ch + CHUNK_HDR
@@ -268,40 +265,49 @@ fn alloc_large(size: Int, kind: Int) -> Int {
     return o
 }
 
+/// Allocate `size` bytes with the given GC kind. This is the hottest function
+/// in the runtime, so it does its own loads and stores rather than going through
+/// the `rtl`/`rts` helpers.
 pub fn alloc(size: Int, kind: Int) -> Int {
+    let base = @rt_base()
     let sz = (size + 15) & ~15
-    rts(RT_SINCE_GC, rtl(RT_SINCE_GC) + sz)
-    if rtl(RT_SINCE_GC) > rtl(RT_THRESHOLD) {
-        if rtl(RT_GC_OFF) == 0 {
-            collect()
-        }
+    let since = @load64(base + RT_SINCE_GC) + sz
+    @store64(base + RT_SINCE_GC, since)
+    if since > @load64(base + RT_THRESHOLD) and @load64(base + RT_GC_OFF) == 0 {
+        collect()
     }
-    let c = size_class(sz)
-    if c < 0 {
+    if sz > MAX_SMALL {
         return alloc_large(sz, kind)
     }
-    let slot = rt() + RT_CLASSES + c * 8
-    var_check_free(slot, c)
-    let o = @load64(slot)
-    @store64(slot, @load64(o))
-    let osz = class_size(c)
-    mzero(o, osz)
-    @store32(o, osz)
-    @store8(o + 4, kind)
-    let ch = chunk_of(o)
-    bm_set(ch + CH_ALLOC_BM, (o - ch - CHUNK_HDR) / osz)
-    return o
-}
-
-fn var_check_free(slot: Int, c: Int) {
+    let mut c = 0
+    let mut osz = 16
+    while osz < sz {
+        osz = osz << 1
+        c += 1
+    }
+    let slot = base + RT_CLASSES + (c << 3)
     if @load64(slot) == 0 {
         grow_class(c)
     }
+    let o = @load64(slot)
+    @store64(slot, @load64(o))
+    // zero the payload; the header is written immediately afterwards
+    let mut i = 0
+    while i < osz {
+        @store64(o + i, 0)
+        i += 8
+    }
+    @store32(o, osz)
+    @store8(o + 4, kind)
+    let ch = o & ~(CHUNK_SIZE - 1)
+    let bi = (o - ch - CHUNK_HDR) >> (4 + c)
+    let a = ch + CH_ALLOC_BM + (bi >> 3)
+    @store8(a, @load8(a) | (1 << (bi & 7)))
+    return o
 }
 
 fn chunk_of(p: Int) -> Int {
-    let base = rtl(RT_HEAP_BASE)
-    return base + ((p - base) / CHUNK_SIZE) * CHUNK_SIZE
+    return p & ~(CHUNK_SIZE - 1)
 }
 
 // ------------------------------------------------------------- the collector
@@ -317,7 +323,7 @@ fn is_object(w: Int) -> Bool {
     if w % 8 != 0 {
         return false
     }
-    let ch = base + ((w - base) / CHUNK_SIZE) * CHUNK_SIZE
+    let ch = w & ~(CHUNK_SIZE - 1)
     if @load64(ch + CH_MAGIC) != CHUNK_MAGIC {
         return false
     }
@@ -339,10 +345,11 @@ fn is_object(w: Int) -> Bool {
         }
         return bm_get(ch + CH_ALLOC_BM, 0)
     }
-    if off % osz != 0 {
+    let shift = @load64(ch + CH_SHIFT)
+    if (off & (osz - 1)) != 0 {
         return false
     }
-    let idx = off / osz
+    let idx = off >> shift
     if idx >= @load64(ch + CH_NOBJ) {
         return false
     }
@@ -353,7 +360,7 @@ fn obj_index(ch: Int, o: Int) -> Int {
     if @load64(ch + CH_CLASS) < 0 {
         return 0
     }
-    return (o - ch - CHUNK_HDR) / @load64(ch + CH_OBJSIZE)
+    return (o - ch - CHUNK_HDR) >> @load64(ch + CH_SHIFT)
 }
 
 fn try_mark(w: Int) {
@@ -468,8 +475,7 @@ fn sweep() {
         }
         let nobj = @load64(ch + CH_NOBJ)
         let data = ch + CHUNK_HDR
-        let head0 = @load64(rt() + RT_CLASSES + cls * 8)
-        let mut head = head0
+        let mut head = @load64(rt() + RT_CLASSES + cls * 8)
         let mut k = 0
         while k < nobj {
             if bm_get(ch + CH_ALLOC_BM, k) {
@@ -557,6 +563,12 @@ pub fn panic_str(msg: Str) {
 
 pub fn divzero(_x: Int) {
     panic_str("division by zero")
+}
+
+/// Index-out-of-range panic taking only the index (the inline bounds check has
+/// already lost the length by the time it calls).
+pub fn oob1(i: Int) {
+    panic_str("index out of range: " + int_to_str(i))
 }
 
 pub fn oob(i: Int, n: Int) {
@@ -711,6 +723,75 @@ pub fn str_hash(s: Str) -> Int {
         i += 1
     }
     return h & 0x7FFFFFFFFFFFFFFF
+}
+
+// ------------------------------------------------------------ string builder
+//
+// `Str` is immutable, so building one with `+` in a loop is quadratic. `Buf`
+// accumulates bytes in a doubling block and produces the `Str` once.
+
+pub struct Buf {
+    data: Int,
+    n: Int,
+    cap: Int,
+}
+
+/// A new builder with room for `cap` bytes.
+pub fn buf_with(cap: Int) -> Buf {
+    let c = if cap < 32{32 } else {cap }
+    return Buf{ data: alloc(16 + c, KIND_ATOMIC) + 16, n: 0, cap: c }
+}
+
+/// A new empty builder.
+pub fn buf() -> Buf {
+    return buf_with(64)
+}
+
+fn Buf.grow(self, need: Int) {
+    if self.n + need <= self.cap {
+        return
+    }
+    let mut nc = self.cap * 2
+    while nc < self.n + need {
+        nc = nc * 2
+    }
+    let nd = alloc(16 + nc, KIND_ATOMIC) + 16
+    mcopy(nd, self.data, self.n)
+    self.data = nd
+    self.cap = nc
+}
+
+/// Append a string.
+pub fn Buf.push(self, s: Str) {
+    let k = len(s)
+    if k == 0 {
+        return
+    }
+    self.grow(k)
+    mcopy(self.data + self.n, @addr(s) + 16, k)
+    self.n += k
+}
+
+/// Append a single byte.
+pub fn Buf.push_byte(self, c: Byte) {
+    self.grow(1)
+    @store8(self.data + self.n, int(c))
+    self.n += 1
+}
+
+/// Bytes accumulated so far.
+pub fn Buf.len(self) -> Int {
+    return self.n
+}
+
+/// Forget everything accumulated so far, keeping the capacity.
+pub fn Buf.clear(self) {
+    self.n = 0
+}
+
+/// The accumulated bytes as a `Str`.
+pub fn Buf.str(self) -> Str {
+    return str_from(self.data, self.n)
 }
 
 // --------------------------------------------------------------------- lists
@@ -868,31 +949,33 @@ pub fn map_new(keydesc: Int, _valisref: Int) -> Int {
     return p
 }
 
+/// Find `k`. Returns the slot index when present, or `-2 - slot` naming the
+/// slot an insert should use. Capacity is always a power of two, so the modulo
+/// is a mask rather than a division.
 fn map_probe(m: Int, k: Int) -> Int {
     let cap = @load64(m + M_CAP)
+    let mask = cap - 1
     let e = @load64(m + M_ENTRIES) + 16
     let d = @load64(m + M_KEYDESC)
-    let mut i = (any_hash(k, d) % cap + cap) % cap
+    let mut i = any_hash(k, d) & mask
     let mut tomb = -1
     let mut n = 0
     while n < cap {
-        let st = @load64(e + i * 24)
+        let slot = e + i * 24
+        let st = @load64(slot)
         if st == 0 {
             if tomb >= 0 {
                 return -2 - tomb
             }
             return -2 - i
         }
-        if st == 1 {
-            if any_eq(@load64(e + i * 24 + 8), k, d) {
-                return i
-            }
-        } else {
-            if tomb < 0 {
-                tomb = i
-            }
+        if st == 1 and any_eq(@load64(slot + 8), k, d) {
+            return i
         }
-        i = (i + 1) % cap
+        if st == 2 and tomb < 0 {
+            tomb = i
+        }
+        i = (i + 1) & mask
         n += 1
     }
     if tomb >= 0 {
@@ -1513,7 +1596,7 @@ fn digits_to_str_pretty(mant: Int, e: Int) -> Str {
 
 // ------------------------------------------------------------------- parsing
 
-pub fn parse_int(s: Str) -> ? Int {
+pub fn parse_int(s: Str) -> ?Int {
     let n = len(s)
     if n == 0 {
         return nil
@@ -1546,7 +1629,7 @@ pub fn parse_int(s: Str) -> ? Int {
     return v
 }
 
-pub fn parse_float(s: Str) -> ? Float {
+pub fn parse_float(s: Str) -> ?Float {
     let n = len(s)
     if n == 0 {
         return nil
@@ -1634,10 +1717,10 @@ pub fn parse_float(s: Str) -> ? Float {
     return r
 }
 
-pub fn str_to_int(s: Str) -> ? Int {
+pub fn str_to_int(s: Str) -> ?Int {
     return parse_int(s)
 }
-pub fn str_to_float(s: Str) -> ? Float {
+pub fn str_to_float(s: Str) -> ?Float {
     return parse_float(s)
 }
 
@@ -1738,45 +1821,56 @@ pub fn any_to_str(w: Int, d: Int) -> Str {
     if k == K_LIST {
         let ed = sub_at(d, 0)
         let n = @load64(w + 8)
-        let mut r = "["
+        let b = buf()
+        b.push("[")
         let mut i = 0
         while i < n {
             if i > 0 {
-                r = r + ", "
+                b.push(", ")
             }
-            r = r + any_to_str(@load64(@load64(w + L_DATA) + 16 + i * 8), ed)
+            b.push(any_to_str(@load64(@load64(w + L_DATA) + 16 + i * 8), ed))
             i += 1
         }
-        return r + "]"
+        b.push("]")
+        return b.str()
     }
     if k == K_MAP {
         let kd = sub_at(d, 0)
         let vd = sub_at(d, 1)
-        let mut r = "{{"
+        let b = buf()
+        b.push("{{")
         let mut i = map_next(w, 0)
         let mut first = true
         while i >= 0 {
             if not first {
-                r = r + ", "
+                b.push(", ")
             }
             first = false
-            r = r + any_to_str(map_key_at(w, i), kd) + ": " + any_to_str(map_val_at(w, i), vd)
+            b.push(any_to_str(map_key_at(w, i), kd))
+            b.push(": ")
+            b.push(any_to_str(map_val_at(w, i), vd))
             i = map_next(w, i + 1)
         }
-        return r + "}}"
+        b.push("}}")
+        return b.str()
     }
     if k == K_STRUCT {
         let n = @load64(d + TD_NSUB)
-        let mut r = @ref[Str](@load64(d + TD_NAME)) + "{{"
+        let b = buf()
+        b.push(@ref[Str](@load64(d + TD_NAME)))
+        b.push("{{")
         let mut i = 0
         while i < n {
             if i > 0 {
-                r = r + ", "
+                b.push(", ")
             }
-            r = r + name_at(d, i) + ": " + any_to_str(@load64(w + 16 + i * 8), sub_at(d, i))
+            b.push(name_at(d, i))
+            b.push(": ")
+            b.push(any_to_str(@load64(w + 16 + i * 8), sub_at(d, i)))
             i += 1
         }
-        return r + "}}"
+        b.push("}}")
+        return b.str()
     }
     if k == K_ENUM {
         let prim = @load64(d + TD_AUX) == 1
@@ -1923,6 +2017,11 @@ pub fn any_eq(a: Int, b: Int, d: Int) -> Bool {
 
 pub fn any_hash(w: Int, d: Int) -> Int {
     let k = @load64(d + TD_KIND)
+    if k == K_INT or k == K_BYTE or k == K_BOOL or k == K_ENUM or k == K_FLOAT {
+        let mut h = w * -7046029254386353131
+        h = h ^ ((h >> 32) & 0xFFFFFFFF)
+        return (h * -4265267296055464877) & 0x7FFFFFFFFFFFFFFF
+    }
     if k == K_STR {
         if w == 0 {
             return 0
@@ -1957,6 +2056,108 @@ pub fn any_hash(w: Int, d: Int) -> Int {
         return h & 0x7FFFFFFFFFFFFFFF
     }
     return w & 0x7FFFFFFFFFFFFFFF
+}
+
+// ------------------------------------------------------------------ input
+
+const IN_BUFSZ: Int = 65536
+
+/// Next byte of standard input, or -1 at end of file. Buffered, so reading a
+/// line does not cost one syscall per character.
+pub fn stdin_getc() -> Int {
+    let pos = rtl(RT_IN_POS)
+    if pos < rtl(RT_IN_LEN) {
+        rts(RT_IN_POS, pos + 1)
+        return @load8(rtl(RT_IN_BUF) + pos)
+    }
+    let mut b = rtl(RT_IN_BUF)
+    if b == 0 {
+        b = @syscall(SYS_MMAP, 0, IN_BUFSZ, 3, 0x4022, -1, 0)
+        if b <= 0 {
+            return -1
+        }
+        rts(RT_IN_BUF, b)
+    }
+    let n = @syscall(SYS_READ, 0, b, IN_BUFSZ)
+    if n <= 0 {
+        rts(RT_IN_LEN, 0)
+        rts(RT_IN_POS, 0)
+        return -1
+    }
+    rts(RT_IN_LEN, n)
+    rts(RT_IN_POS, 1)
+    return @load8(b)
+}
+
+/// Read one line from standard input without the trailing newline, or nil at
+/// end of file.
+pub fn stdin_line() -> ?Str {
+    let cap0 = 128
+    let mut cap = cap0
+    let mut n = 0
+    let mut buf = alloc(16 + cap, KIND_ATOMIC) + 16
+    let mut any = false
+    while true {
+        let c = stdin_getc()
+        if c < 0 {
+            if not any {
+                return nil
+            }
+            return str_from(buf, n)
+        }
+        any = true
+        if c == 10 {
+            return str_from(buf, n)
+        }
+        if n == cap {
+            let nc = cap * 2
+            let nb = alloc(16 + nc, KIND_ATOMIC) + 16
+            mcopy(nb, buf, n)
+            buf = nb
+            cap = nc
+        }
+        @store8(buf + n, c)
+        n += 1
+    }
+    return str_from(buf, n)
+}
+
+/// Read the rest of standard input.
+pub fn stdin_all() -> Str {
+    let mut cap = 65536
+    let mut n = 0
+    let mut buf = alloc(16 + cap, KIND_ATOMIC) + 16
+    while true {
+        let c = stdin_getc()
+        if c < 0 {
+            return str_from(buf, n)
+        }
+        if n == cap {
+            let nc = cap * 2
+            let nb = alloc(16 + nc, KIND_ATOMIC) + 16
+            mcopy(nb, buf, n)
+            buf = nb
+            cap = nc
+        }
+        @store8(buf + n, c)
+        n += 1
+    }
+    return str_from(buf, n)
+}
+
+/// Read exactly `want` bytes from standard input (fewer at end of file).
+pub fn stdin_exact(want: Int) -> Str {
+    let mut n = 0
+    let buf = alloc(16 + want + 1, KIND_ATOMIC) + 16
+    while n < want {
+        let c = stdin_getc()
+        if c < 0 {
+            break
+        }
+        @store8(buf + n, c)
+        n += 1
+    }
+    return str_from(buf, n)
 }
 
 // ----------------------------------------------------------------- output

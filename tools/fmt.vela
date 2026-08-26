@@ -15,12 +15,13 @@
 //
 // Running the formatter twice always produces the same text as running it once.
 
+use core
 use ./lex
 
 struct F {
     toks: [lex.Token],
     i: Int,
-    out: Str,
+    out: core.Buf,
     line: Str,
     indent: Int,
     pending_blank: Bool,
@@ -31,13 +32,13 @@ struct F {
 /// Format Vela source text.
 pub fn format(src: Str) -> !Str {
     let toks = lex.tokenize(src)?
-    let f = F{ toks: toks, i: 0, out: "", line: "", indent: 0, pending_blank: false, prev: "", cont: 0 }
+    let f = F{ toks: toks, i: 0, out: core.buf_with(len(src) + len(src) / 4), line: "", indent: 0, pending_blank: false, prev: "", cont: 0 }
     f.skip_newlines_leading()
     while not f.at_eof() {
         f.decl()
     }
     f.flush()
-    let mut s = f.out
+    let mut s = f.out.str()
     while s.ends_with("\n\n") {
         s = s[0..len(s) - 1]
     }
@@ -136,10 +137,17 @@ fn F.emit_space(self) {
 fn F.flush(self) {
     let t = rstrip(self.line)
     if len(t) > 0 {
-        if self.pending_blank and len(self.out) > 0 {
-            self.out = self.out + "\n"
+        if self.pending_blank and self.out.len() > 0 {
+            self.out.push("\n")
         }
-        self.out = self.out + "    ".repeat(self.indent + self.cont) + t + "\n"
+        let n = self.indent + self.cont
+        let mut i = 0
+        while i < n {
+            self.out.push("    ")
+            i += 1
+        }
+        self.out.push(t)
+        self.out.push("\n")
         self.pending_blank = false
     }
     self.line = ""
@@ -166,7 +174,7 @@ fn F.newline(self) {
 }
 
 fn F.blank(self) {
-    if len(self.out) > 0 {
+    if self.out.len() > 0 {
         self.pending_blank = true
     }
 }
@@ -825,7 +833,7 @@ fn ends_with_open(s: Str) -> Bool {
     }
     let c = s[len(s) - 1]
     return c == '(' or c == '[' or c == '{' or c == '.' or c == '@' or
-        c == '~' or c == '!' or c == ' '
+        c == '~' or c == '!' or c == '?' or c == ' '
 }
 
 fn F.maybe_space_before(self) {

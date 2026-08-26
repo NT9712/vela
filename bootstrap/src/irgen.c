@@ -684,14 +684,19 @@ static int gen_index(Gen *g, Expr *e) {
         gen_operands(g, es, NULL, 2, v);
     }
     if (e->idx == IDX_LIST) {
-        int args[2] = { v[0], v[1] };
-        int r = emit_call_n(g, "list_get", args, 2);
-        if (is_float_ty(e->type)) return bitcast_i2f(g, r);
-        return r;
+        IrIns *i = g_ins(g, IR_LIST_GET);
+        i->a = v[0]; i->b = v[1];
+        i->dst = new_vreg(g, 0);
+        i->span = e->span;
+        if (is_float_ty(e->type)) return bitcast_i2f(g, i->dst);
+        return i->dst;
     }
     if (e->idx == IDX_STR) {
-        int args[2] = { v[0], v[1] };
-        return emit_call_n(g, "str_index", args, 2);
+        IrIns *i = g_ins(g, IR_STR_IDX);
+        i->a = v[0]; i->b = v[1];
+        i->dst = new_vreg(g, 0);
+        i->span = e->span;
+        return i->dst;
     }
     /* map lookup yields ?V */
     int args[2] = { v[0], v[1] };
@@ -1488,8 +1493,11 @@ static void gen_assign(Gen *g, Stmt *s) {
                                       emit_load_local(g, rs, is_float_ty(lhs->type)),
                                       lhs->type, s->span);
             if (is_float_ty(lhs->type)) nv = bitcast_f2i(g, nv);
-            int y[3] = { emit_load_local(g, ls, 0), emit_load_local(g, is, 0), nv };
-            emit_call_n(g, "list_set", y, 3);
+            int lv3 = emit_load_local(g, ls, 0);
+            int iv3 = emit_load_local(g, is, 0);
+            IrIns *si = g_ins(g, IR_LIST_SET);
+            si->a = lv3; si->b = iv3; si->target2 = nv;
+            si->span = lhs->span;
             return;
         }
         if (lhs->kind == E_INDEX && lhs->idx == IDX_MAP) {
@@ -1545,8 +1553,11 @@ static void gen_assign(Gen *g, Stmt *s) {
             int v = gen_expr(g, s->b);
             v = gen_coerce(g, v, s->b->type, lhs->type);
             if (is_float_ty(lhs->type)) v = bitcast_f2i(g, v);
-            int x[3] = { emit_load_local(g, ls, 0), emit_load_local(g, is, 0), v };
-            emit_call_n(g, "list_set", x, 3);
+            int lv2 = emit_load_local(g, ls, 0);
+            int iv2 = emit_load_local(g, is, 0);
+            IrIns *si = g_ins(g, IR_LIST_SET);
+            si->a = lv2; si->b = iv2; si->target2 = v;
+            si->span = lhs->span;
             return;
         }
         if (lhs->idx == IDX_MAP) {
@@ -1617,8 +1628,13 @@ static void gen_for(Gen *g, Stmt *s) {
         int c = gen_binop_ir(g, T_LT, OPC_INT, i, n, s->span);
         emit_br(g, c, bbody, bend);
         g->blk = bbody;
-        int x[2] = { emit_load_local(g, lslot, 0), emit_load_local(g, islot, 0) };
-        int v = emit_call_n(g, is_str ? "str_index" : "list_get", x, 2);
+        int lv = emit_load_local(g, lslot, 0);
+        int iv = emit_load_local(g, islot, 0);
+        IrIns *gi = g_ins(g, is_str ? IR_STR_IDX : IR_LIST_GET);
+        gi->a = lv; gi->b = iv;
+        gi->dst = new_vreg(g, 0);
+        gi->span = s->span;
+        int v = gi->dst;
         Sym *valsym = with_index ? var2 : var;
         if (with_index) gen_bind(g, var, emit_load_local(g, islot, 0));
         if (valsym) {

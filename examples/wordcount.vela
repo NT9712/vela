@@ -45,7 +45,7 @@ pub fn top(counts: {Str: Int }, n: Int) -> [Count] {
     for w, c in counts {
         all.push(Count{ word: w, n: c })
     }
-    sort.by(all, | a: Count, b: Count | { if a.n != b.n{ a.n > b.n } else { a.word < b.word } })
+    sort.by(all, | a: Count, b: Count | {if a.n != b.n{a.n > b.n } else {a.word < b.word } })
     if len(all) <= n {
         return all
     }

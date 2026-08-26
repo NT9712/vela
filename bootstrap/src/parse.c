@@ -697,6 +697,34 @@ static Expr *parse_postfix(P *p) {
             }
             Tok *id = expect(p, T_IDENT, "after `.`");
             if (!id) break;
+            /* `pkg.Type{ ... }` — a struct literal of a type from another
+               module. Types are capitalised, which makes this unambiguous. */
+            if (at(p, T_LBRACE) && !p_no_struct && e->kind == E_IDENT &&
+                id->text[0] >= 'A' && id->text[0] <= 'Z') {
+                Expr *st = mkexpr(p, E_STRUCT, e->span);
+                st->name = id->text;
+                st->mod = e->name;
+                adv(p);
+                int save = p_no_struct; p_no_struct = 0;
+                skip_nl(p);
+                while (!at(p, T_RBRACE) && !at(p, T_EOF)) {
+                    Tok *fn = expect(p, T_IDENT, "as field name");
+                    if (!fn) break;
+                    FieldInit *fi = NEW(FieldInit);
+                    fi->name = fn->text; fi->span = fn->span;
+                    if (accept(p, T_COLON)) fi->value = parse_expr(p);
+                    else { Expr *ref = mkexpr(p, E_IDENT, fn->span); ref->name = fn->text; fi->value = ref; }
+                    vec_push(&st->list, fi);
+                    skip_nl(p);
+                    if (!accept(p, T_COMMA)) break;
+                    skip_nl(p);
+                }
+                p_no_struct = save;
+                Tok *r = expect(p, T_RBRACE, "to close struct literal");
+                if (r) st->span = join(e->span, r->span);
+                e = st;
+                continue;
+            }
             if (at(p, T_LPAREN) || (at(p, T_LBRACKET) && looks_like_targs(p))) {
                 Expr *m = mkexpr(p, E_METHOD, e->span);
                 m->a = e;

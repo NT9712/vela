@@ -16,7 +16,8 @@ static int ins_has_effect(IrIns *i) {
         case IR_TRAP: case IR_SAVE_REGS: case IR_RESTORE_REGS:
             return 1;
         case IR_DIV: case IR_MOD:
-            return 1;   /* may trap on divide by zero */
+        case IR_LIST_GET: case IR_STR_IDX: case IR_LIST_SET:
+            return 1;   /* may trap */
         default:
             return 0;
     }
@@ -107,6 +108,79 @@ static int fold_block(FnInst *f, IrBlock *b) {
     return changed;
 }
 
+/* ---- strength reduction: divide and modulo by a power of two ---- */
+
+static int is_pow2(int64_t v) { return v > 0 && (v & (v - 1)) == 0; }
+static int log2i(int64_t v) { int k = 0; while ((((int64_t)1) << k) != v) k++; return k; }
+
+/* Rewrite `x / 2^k` and `x % 2^k` into shifts. Signed semantics need the
+   round-toward-zero correction `x + ((x >> 63) & (2^k - 1))`. */
+static int reduce_block(FnInst *f, IrBlock *b) {
+    int nv = f->nvregs > 0 ? f->nvregs : 1;
+    int64_t *cv = NEWN(int64_t, nv);
+    char *known = (char *)arena_alloc(&g_arena, (size_t)nv);
+    memset(known, 0, (size_t)nv);
+    Vec out; memset(&out, 0, sizeof out);
+    int changed = 0;
+
+    for (int i = 0; i < b->ins.len; i++) {
+        IrIns *in = VEC_AT(&b->ins, IrIns, i);
+        if (in->op == IR_CONST && in->dst >= 0 && in->dst < nv) {
+            known[in->dst] = 1; cv[in->dst] = in->imm;
+        }
+        int kb = in->b >= 0 && in->b < nv && known[in->b];
+        if ((in->op == IR_DIV || in->op == IR_MOD) && kb && is_pow2(cv[in->b])) {
+            int k = log2i(cv[in->b]);
+            int64_t mask = cv[in->b] - 1;
+            /* sign = x >> 63 */
+            IrIns *c63 = NEW(IrIns); memset(c63, 0, sizeof *c63);
+            c63->op = IR_CONST; c63->dst = f->nvregs++; c63->a = c63->b = -1;
+            c63->imm = 63; c63->size = 8;
+            IrIns *sh = NEW(IrIns); memset(sh, 0, sizeof *sh);
+            sh->op = IR_SHR; sh->dst = f->nvregs++; sh->a = in->a; sh->b = c63->dst; sh->size = 8;
+            IrIns *cm = NEW(IrIns); memset(cm, 0, sizeof *cm);
+            cm->op = IR_CONST; cm->dst = f->nvregs++; cm->a = cm->b = -1;
+            cm->imm = mask; cm->size = 8;
+            IrIns *an = NEW(IrIns); memset(an, 0, sizeof *an);
+            an->op = IR_AND; an->dst = f->nvregs++; an->a = sh->dst; an->b = cm->dst; an->size = 8;
+            IrIns *ad = NEW(IrIns); memset(ad, 0, sizeof *ad);
+            ad->op = IR_ADD; ad->dst = f->nvregs++; ad->a = in->a; ad->b = an->dst; ad->size = 8;
+            vec_push(&out, c63); vec_push(&out, sh); vec_push(&out, cm);
+            vec_push(&out, an); vec_push(&out, ad);
+            if (in->op == IR_DIV) {
+                IrIns *ck = NEW(IrIns); memset(ck, 0, sizeof *ck);
+                ck->op = IR_CONST; ck->dst = f->nvregs++; ck->a = ck->b = -1;
+                ck->imm = k; ck->size = 8;
+                vec_push(&out, ck);
+                in->op = IR_SAR_HACK; in->a = ad->dst; in->b = ck->dst;
+            } else {
+                /* x % 2^k == x - ((x + corr) & ~mask) */
+                IrIns *nm = NEW(IrIns); memset(nm, 0, sizeof *nm);
+                nm->op = IR_CONST; nm->dst = f->nvregs++; nm->a = nm->b = -1;
+                nm->imm = ~mask; nm->size = 8;
+                IrIns *aa = NEW(IrIns); memset(aa, 0, sizeof *aa);
+                aa->op = IR_AND; aa->dst = f->nvregs++; aa->a = ad->dst; aa->b = nm->dst; aa->size = 8;
+                vec_push(&out, nm); vec_push(&out, aa);
+                in->op = IR_SUB; in->b = aa->dst;
+            }
+            changed = 1;
+        }
+        vec_push(&out, in);
+    }
+    if (changed) { b->ins = out; }
+    /* grow the float-flag table to cover the new vregs */
+    if (changed && f->nvregs > f->vreg_cap) {
+        int nc = f->vreg_cap ? f->vreg_cap : 64;
+        while (nc < f->nvregs) nc *= 2;
+        int *nf = NEWN(int, nc);
+        memset(nf, 0, sizeof(int) * (size_t)nc);
+        if (f->vreg_float) memcpy(nf, f->vreg_float, sizeof(int) * (size_t)f->vreg_cap);
+        f->vreg_float = nf;
+        f->vreg_cap = nc;
+    }
+    return changed;
+}
+
 /* ---- dead code elimination inside a block ---- */
 
 static int dce_block(FnInst *f, IrBlock *b) {
@@ -117,6 +191,8 @@ static int dce_block(FnInst *f, IrBlock *b) {
         IrIns *in = VEC_AT(&b->ins, IrIns, i);
         if (in->a >= 0 && in->a < nv) used[in->a] = 1;
         if (in->b >= 0 && in->b < nv) used[in->b] = 1;
+        if (in->op == IR_LIST_SET && in->target2 >= 0 && in->target2 < nv)
+            used[in->target2] = 1;
         for (int k = 0; k < in->args.len; k++) {
             int v = (int)(intptr_t)in->args.data[k];
             if (v >= 0 && v < nv) used[v] = 1;
@@ -208,6 +284,7 @@ static void reachability(Unit *u) {
     for (int i = 0; i < u->fns.len; i++) {
         FnInst *f = VEC_AT(&u->fns, FnInst, i);
         if (f->name == intern("core.rt_init") || f->name == intern("core.divzero") ||
+            f->name == intern("core.oob1") ||
             f->name == intern("core.finish_result") || f->name == intern("$testmain"))
             mark_fn(u, i, seen);
     }
@@ -240,8 +317,9 @@ int ir_verify(Unit *u, FILE *out) {
             memset(def, 0, (size_t)nv);
             for (int k = 0; k < b->ins.len; k++) {
                 IrIns *in = VEC_AT(&b->ins, IrIns, k);
-                int ops[3] = { in->a, in->b, -1 };
-                for (int q = 0; q < 2; q++) {
+                int ops[3] = { in->a, in->b,
+                               in->op == IR_LIST_SET ? in->target2 : -1 };
+                for (int q = 0; q < 3; q++) {
                     int v = ops[q];
                     if (v < 0) continue;
                     if (v >= nv || !def[v]) {
@@ -295,6 +373,12 @@ void ir_optimize(Unit *u) {
             }
             if (!changed) break;
         }
+        /* strength reduction runs once, after the folding fixpoint, so the
+           extra virtual registers it introduces do not get folded again */
+        for (int j = 0; j < f->blocks.len; j++)
+            reduce_block(f, VEC_AT(&f->blocks, IrBlock, j));
+        for (int j = 0; j < f->blocks.len; j++)
+            dce_block(f, VEC_AT(&f->blocks, IrBlock, j));
         prune_blocks(f);
     }
     reachability(u);
@@ -313,7 +397,7 @@ static const char *opname(IrOp o) {
         case IR_ADD: return "add"; case IR_SUB: return "sub"; case IR_MUL: return "mul";
         case IR_DIV: return "div"; case IR_MOD: return "mod"; case IR_AND: return "and";
         case IR_OR: return "or"; case IR_XOR: return "xor"; case IR_SHL: return "shl";
-        case IR_SHR: return "shr"; case IR_NEG: return "neg"; case IR_NOT: return "not";
+        case IR_SHR: return "shr"; case IR_SAR_HACK: return "sar"; case IR_NEG: return "neg"; case IR_NOT: return "not";
         case IR_FADD: return "fadd"; case IR_FSUB: return "fsub"; case IR_FMUL: return "fmul";
         case IR_FDIV: return "fdiv"; case IR_FNEG: return "fneg";
         case IR_FSQRT: return "fsqrt";
@@ -324,7 +408,9 @@ static const char *opname(IrOp o) {
         case IR_I2F: return "i2f"; case IR_F2I: return "f2i";
         case IR_CALL: return "call"; case IR_CALL_IND: return "call.ind";
         case IR_SYSCALL: return "syscall"; case IR_SAVE_REGS: return "save.regs";
-        case IR_STACK_TOP: return "rtslot"; case IR_STORE_LOCAL: return "st.local";
+        case IR_STACK_TOP: return "rtslot";
+        case IR_LIST_GET: return "list.get"; case IR_STR_IDX: return "str.at";
+        case IR_LIST_SET: return "list.set"; case IR_STORE_LOCAL: return "st.local";
         case IR_STORE_MEM: return "st"; case IR_STORE_GLOBAL: return "st.global";
         case IR_RESTORE_REGS: return "restore.regs"; case IR_TRAP: return "trap";
         case IR_JMP: return "jmp"; case IR_BR: return "br";

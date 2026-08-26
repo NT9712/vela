@@ -302,6 +302,40 @@ static void lex_string(Lexer *L, const char *from) {
         if (c == '"') { L->p++; break; }
         if (c == '\n') { lerr(L, from, "unterminated string literal (newline in string)"); break; }
         if (c == '\\') {
+            if (L->p[1] == 'u' && L->p[2] == '{') {
+                const char *esc = L->p;
+                L->p += 3;
+                uint32_t cp = 0;
+                int digits = 0;
+                while (L->p < L->end && *L->p != '}') {
+                    int h = hexval(*L->p);
+                    if (h < 0) break;
+                    cp = cp * 16 + (uint32_t)h;
+                    digits++;
+                    L->p++;
+                }
+                if (*L->p != '}' || digits == 0 || digits > 6 || cp > 0x10FFFF) {
+                    lerr(L, esc, "`\\u{...}` needs 1 to 6 hex digits naming a Unicode code point");
+                    if (*L->p == '}') L->p++;
+                    continue;
+                }
+                L->p++;
+                if (cp < 0x80) buf_u8(&lit, (uint8_t)cp);
+                else if (cp < 0x800) {
+                    buf_u8(&lit, (uint8_t)(0xC0 | (cp >> 6)));
+                    buf_u8(&lit, (uint8_t)(0x80 | (cp & 0x3F)));
+                } else if (cp < 0x10000) {
+                    buf_u8(&lit, (uint8_t)(0xE0 | (cp >> 12)));
+                    buf_u8(&lit, (uint8_t)(0x80 | ((cp >> 6) & 0x3F)));
+                    buf_u8(&lit, (uint8_t)(0x80 | (cp & 0x3F)));
+                } else {
+                    buf_u8(&lit, (uint8_t)(0xF0 | (cp >> 18)));
+                    buf_u8(&lit, (uint8_t)(0x80 | ((cp >> 12) & 0x3F)));
+                    buf_u8(&lit, (uint8_t)(0x80 | ((cp >> 6) & 0x3F)));
+                    buf_u8(&lit, (uint8_t)(0x80 | (cp & 0x3F)));
+                }
+                continue;
+            }
             L->p++;
             int ch;
             if (read_escape(L, from, &ch)) buf_u8(&lit, (uint8_t)ch);

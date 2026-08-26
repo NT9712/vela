@@ -1,0 +1,34 @@
+// ui — how the todo application prints things.
+
+use std/io
+use std/fmt
+use store/store as db
+
+/// Print the command list.
+pub fn usage() {
+    io.println("todo - a task list")
+    io.println("")
+    io.println("usage: todo <command> [arguments]")
+    io.println("")
+    io.println(fmt.pad_right("  add <title> [--tag t]", 26) + "add a task")
+    io.println(fmt.pad_right("  list [--tag t]", 26) + "show tasks")
+    io.println(fmt.pad_right("  done <id>", 26) + "mark a task done")
+    io.println(fmt.pad_right("  rm <id>", 26) + "remove a task")
+    io.println(fmt.pad_right("  help", 26) + "this message")
+    io.println("")
+    io.println("the list is stored in $TODO_FILE, or ~/.todo.json")
+}
+
+/// Print a task list as a table.
+pub fn show(tasks: [db.Task]) {
+    if len(tasks) == 0 {
+        io.println("nothing to do")
+        return
+    }
+    let rows: [[Str]] = [["id", "", "title", "tags"]]
+    for t in tasks {
+        let mark = if t.done{"[x]" } else {"[ ]" }
+        rows.push([str(t.id), mark, t.title, t.tags.join(", ")])
+    }
+    io.println(fmt.table(rows))
+}

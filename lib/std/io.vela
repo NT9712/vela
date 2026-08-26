@@ -46,39 +46,18 @@ pub fn read(fd: Int, n: Int) -> Str {
 
 /// Read one line from standard input, without the trailing newline.
 /// Returns nil at end of file.
-pub fn read_line() -> ? Str {
-    let mut out = ""
-    let mut any = false
-    let buf = core.str_alloc(1)
-    while true {
-        let got = @syscall(core.SYS_READ, STDIN, buf + 16, 1)
-        if got <= 0 {
-            if not any {
-                return nil
-            }
-            return out
-        }
-        any = true
-        let c = @load8(buf + 16)
-        if c == 10 {
-            return out
-        }
-        out = out + @ref[Str](buf)
-    }
-    return out
+pub fn read_line() -> ?Str {
+    return core.stdin_line()
 }
 
 /// Read all of standard input.
 pub fn read_all() -> Str {
-    let mut out = ""
-    while true {
-        let chunk = read(STDIN, 65536)
-        if len(chunk) == 0 {
-            return out
-        }
-        out = out + chunk
-    }
-    return out
+    return core.stdin_all()
+}
+
+/// Read exactly `n` bytes from standard input (fewer at end of file).
+pub fn read_exact(n: Int) -> Str {
+    return core.stdin_exact(n)
 }
 
 /// Flush is a no-op: Vela's output is unbuffered and every write is a syscall.

@@ -1,0 +1,129 @@
+// todo — a small multi-file command-line application.
+//
+//   todo add "write the docs" --tag work
+//   todo list [--tag work]
+//   todo done 1
+//   todo rm 1
+//
+// The task list itself lives in the `store` package next door, which is wired up
+// through vela.toml.
+
+use std/io
+use std/os
+use std/fmt
+use std/path
+use store/store as db
+use ./ui
+
+const DEFAULT_FILE: Str = ".todo.json"
+
+fn data_path() -> Str {
+    if let p = os.getenv("TODO_FILE") {
+        return p
+    }
+    let home = os.getenv("HOME") ?? "."
+    return path.join([home, DEFAULT_FILE])
+}
+
+fn main() -> Int {
+    let argv = os.args()
+    if len(argv) < 2 {
+        ui.usage()
+        return 1
+    }
+    match run(argv) {
+        ok(code) => return code,
+        err(e) => {
+            io.eprintln("todo: {e.msg}")
+            return 1
+        },
+    }
+}
+
+fn run(argv: [Str]) -> !Int {
+    let file = data_path()
+    let s = db.load(file)?
+    let cmd = argv[1]
+    let rest = argv[2..len(argv)]
+
+    if cmd == "add" {
+        if len(rest) == 0 {
+            return err("`add` needs a title\n       usage: todo add <title> [--tag t]")
+        }
+        let title: [Str] = []
+        let tags: [Str] = []
+        let mut i = 0
+        while i < len(rest) {
+            if rest[i] == "--tag" and i + 1 < len(rest) {
+                tags.push(rest[i + 1])
+                i += 2
+                continue
+            }
+            title.push(rest[i])
+            i += 1
+        }
+        let id = s.add(title.join(" "), tags)
+        s.save()?
+        io.println("added #{id}")
+        return ok(0)
+    }
+
+    if cmd == "list" or cmd == "ls" {
+        let mut tag = ""
+        let mut i = 0
+        while i < len(rest) {
+            if rest[i] == "--tag" and i + 1 < len(rest) {
+                tag = rest[i + 1]
+                i += 2
+                continue
+            }
+            i += 1
+        }
+        ui.show(s.filter_tag(tag))
+        io.println("")
+        io.println("{s.done_count()}/{len(s.tasks)} done   ({file})")
+        return ok(0)
+    }
+
+    if cmd == "done" {
+        let id = arg_id(rest)?
+        if not s.complete(id) {
+            return err("no task #{id}")
+        }
+        s.save()?
+        io.println("completed #{id}")
+        return ok(0)
+    }
+
+    if cmd == "rm" {
+        let id = arg_id(rest)?
+        if not s.remove(id) {
+            return err("no task #{id}")
+        }
+        s.save()?
+        io.println("removed #{id}")
+        return ok(0)
+    }
+
+    if cmd == "help" or cmd == "--help" or cmd == "-h" {
+        ui.usage()
+        return ok(0)
+    }
+
+    return err("unknown command `{cmd}`\n       run `todo help` for the list")
+}
+
+fn arg_id(rest: [Str]) -> !Int {
+    if len(rest) == 0 {
+        return err("expected a task id")
+    }
+    return ok(rest[0].to_int() ?? return err("`{rest[0]}` is not a task id"))
+}
+
+test "arg_id rejects non-numbers" {
+    match arg_id(["x"]) {
+        ok(_) => panic("should have failed"),
+        err(e) => assert(e.msg.contains("not a task id")),
+    }
+    assert_eq(arg_id(["7"]) ?? 0, 7)
+}

@@ -37,7 +37,7 @@ fn sockaddr(ip: Int, port: Int) -> Int {
 }
 
 /// Parse dotted-quad IPv4 into the network-order word the kernel expects.
-pub fn parse_ip(s: Str) -> ? Int {
+pub fn parse_ip(s: Str) -> ?Int {
     let parts = s.split(".")
     if len(parts) != 4 {
         return nil

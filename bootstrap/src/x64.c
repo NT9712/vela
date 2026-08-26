@@ -66,6 +66,15 @@ static void modrm(int mod, int reg, int rm) {
     b1((uint8_t)((mod << 6) | ((reg & 7) << 3) | (rm & 7)));
 }
 
+/* [base + index*8 + disp] operand */
+static void mem_idx(int reg, int base, int index, int32_t disp) {
+    int mod = (disp == 0 && (base & 7) != 5) ? 0 : (disp >= -128 && disp <= 127 ? 1 : 2);
+    modrm(mod, reg, 4);                     /* rm = SIB */
+    b1((uint8_t)((3 << 6) | ((index & 7) << 3) | (base & 7)));   /* scale 8 */
+    if (mod == 1) b1((uint8_t)(int8_t)disp);
+    else if (mod == 2) b4((uint32_t)disp);
+}
+
 /* [base + disp] operand */
 static void mem(int reg, int base, int32_t disp) {
     int rm = base & 7;
@@ -192,6 +201,8 @@ typedef struct {
 
 typedef struct { int at; int blk; } JFix;
 
+static int cur_block_id;      /* block being emitted, for jump elision */
+
 static int32_t slot_off(FGen *fg, int slot) { return -8 * (slot + 1); }
 static int32_t spill_off(FGen *fg, int idx) { return -8 * (fg->nslots + idx + 1); }
 
@@ -233,6 +244,7 @@ static void alloc_block(FGen *fg, IrBlock *b) {
         IrIns *in = VEC_AT(&b->ins, IrIns, i);
         if (in->a >= 0) lastuse[in->a] = i;
         if (in->b >= 0) lastuse[in->b] = i;
+        if (in->op == IR_LIST_SET && in->target2 >= 0) lastuse[in->target2] = i;
         for (int k = 0; k < in->args.len; k++) {
             int v = (int)(intptr_t)in->args.data[k];
             if (v >= 0) lastuse[v] = i;
@@ -285,6 +297,7 @@ static void alloc_block(FGen *fg, IrBlock *b) {
 /* ---- instruction emission ---- */
 
 static void jump_to(FGen *fg, int blk) {
+    if (blk == cur_block_id + 1) return;        /* falls through */
     b1(0xE9);
     JFix *jf = NEW(JFix);
     jf->at = here(); jf->blk = blk;
@@ -308,6 +321,54 @@ static int cmp_cc(IrOp op) {
         case IR_GT: return CC_G;
         case IR_GE: return CC_GE;
         default: return CC_E;
+    }
+}
+
+/* The condition code a comparison can be folded into a branch as, or -1. */
+static int fusable_cc(IrOp op) {
+    switch (op) {
+        case IR_EQ: return CC_E;
+        case IR_NE: return CC_NE;
+        case IR_LT: return CC_L;
+        case IR_LE: return CC_LE;
+        case IR_GT: return CC_G;
+        case IR_GE: return CC_GE;
+        case IR_FLT: case IR_FGT: return CC_A;
+        case IR_FLE: case IR_FGE: return CC_AE;
+        default: return -1;
+    }
+}
+
+static int invert_cc(int cc) {
+    switch (cc) {
+        case CC_E: return CC_NE;   case CC_NE: return CC_E;
+        case CC_L: return CC_GE;   case CC_GE: return CC_L;
+        case CC_LE: return CC_G;   case CC_G: return CC_LE;
+        case CC_A: return CC_BE;   case CC_BE: return CC_A;
+        case CC_AE: return CC_B;   case CC_B: return CC_AE;
+        default: return cc;
+    }
+}
+
+static void emit_ins(FGen *fg, IrIns *in);
+
+static void emit_fused_branch(FGen *fg, IrIns *cmp, IrIns *br, int cc) {
+    if (cmp->op >= IR_FEQ && cmp->op <= IR_FGE) {
+        if (cmp->op == IR_FLT || cmp->op == IR_FLE) { fload(fg, 0, cmp->b); fload(fg, 1, cmp->a); }
+        else { fload(fg, 0, cmp->a); fload(fg, 1, cmp->b); }
+        ucomisd(0, 1);
+    } else {
+        int a = getr(fg, cmp->a, RAX);
+        int b = getr(fg, cmp->b, RCX);
+        cmp_rr(a, b);
+    }
+    if (br->target2 == cur_block_id + 1) {
+        jcc_to(fg, cc, br->target);
+    } else if (br->target == cur_block_id + 1) {
+        jcc_to(fg, invert_cc(cc), br->target2);
+    } else {
+        jcc_to(fg, cc, br->target);
+        jump_to(fg, br->target2);
     }
 }
 
@@ -456,7 +517,7 @@ static void emit_ins(FGen *fg, IrIns *in) {
             putr(fg, in->dst, d);
             break;
         }
-        case IR_SHL: case IR_SHR: {
+        case IR_SHL: case IR_SHR: case IR_SAR_HACK: {
             int a = getr(fg, in->a, RAX);
             int b = getr(fg, in->b, RCX);
             if (a == RCX) { mov_rr(RDX, a); a = RDX; }
@@ -630,13 +691,53 @@ static void emit_ins(FGen *fg, IrIns *in) {
         case IR_RESTORE_REGS:
             add_ri(RSP, 48);
             break;
+        case IR_LIST_GET: case IR_STR_IDX: case IR_LIST_SET: {
+            /* Bounds-checked element access, expanded inline so a hot loop is
+               a handful of instructions rather than a call. */
+            int base = getr(fg, in->a, RCX);
+            if (base != RCX) { mov_rr(RCX, base); base = RCX; }
+            int idx = getr(fg, in->b, RSI);
+            if (idx != RSI) { mov_rr(RSI, idx); idx = RSI; }
+            load_rm(RDX, RCX, 8, 8, 0);              /* rdx = length */
+            cmp_rr(RSI, RDX);
+            b1(0x0F); b1(0x82);                      /* jb ok  (unsigned) */
+            int patch = here(); b4(0);
+            mov_rr(RDI, RSI);
+            b1(0xE8); { int at = here(); rel(at, 0, -1001, 0); b4(0); }  /* core.oob */
+            ud2_();
+            { int32_t d = (int32_t)(here() - (patch + 4)); memcpy(T.data + patch, &d, 4); }
+            if (in->op == IR_STR_IDX) {
+                /* movzx dst, byte [rcx + rsi + 16] */
+                int d = dstr(fg, in->dst, RAX);
+                rex(1, d, RSI, RCX); b1(0x0F); b1(0xB6);
+                modrm(1, d, 4); b1((uint8_t)((0 << 6) | (RSI << 3) | RCX)); b1(16);
+                putr(fg, in->dst, d);
+                break;
+            }
+            load_rm(RCX, RCX, 24, 8, 0);             /* rcx = element block */
+            if (in->op == IR_LIST_GET) {
+                int d = dstr(fg, in->dst, RAX);
+                rex(1, d, RSI, RCX); b1(0x8B); mem_idx(d, RCX, RSI, 16);
+                putr(fg, in->dst, d);
+            } else {
+                int v = getr(fg, in->target2, RAX);
+                rex(1, v, RSI, RCX); b1(0x89); mem_idx(v, RCX, RSI, 16);
+            }
+            break;
+        }
         case IR_TRAP: ud2_(); break;
         case IR_JMP: jump_to(fg, in->target); break;
         case IR_BR: {
             int c = getr(fg, in->a, RAX);
             test_rr(c, c);
-            jcc_to(fg, CC_NE, in->target);
-            jump_to(fg, in->target2);
+            if (in->target2 == cur_block_id + 1) {
+                jcc_to(fg, CC_NE, in->target);
+            } else if (in->target == cur_block_id + 1) {
+                jcc_to(fg, CC_E, in->target2);
+            } else {
+                jcc_to(fg, CC_NE, in->target);
+                jump_to(fg, in->target2);
+            }
             break;
         }
         case IR_RET: case IR_RETV: {
@@ -707,8 +808,23 @@ static void gen_function(FnInst *f) {
     for (int i = 0; i < f->blocks.len; i++) {
         IrBlock *b = VEC_AT(&f->blocks, IrBlock, i);
         fg.blk_off[i] = here();
-        for (int j = 0; j < b->ins.len; j++)
-            emit_ins(&fg, VEC_AT(&b->ins, IrIns, j));
+        cur_block_id = i;
+        for (int j = 0; j < b->ins.len; j++) {
+            IrIns *in = VEC_AT(&b->ins, IrIns, j);
+            /* Fuse `cmp` with the branch that immediately consumes it: the
+               comparison is the last instruction before the terminator, so its
+               result cannot be used anywhere else. */
+            if (j + 2 == b->ins.len) {
+                IrIns *nx = VEC_AT(&b->ins, IrIns, j + 1);
+                int cc = fusable_cc(in->op);
+                if (cc >= 0 && nx->op == IR_BR && nx->a == in->dst && in->dst >= 0) {
+                    emit_fused_branch(&fg, in, nx, cc);
+                    j++;
+                    continue;
+                }
+            }
+            emit_ins(&fg, in);
+        }
         /* fall through to the next block if not terminated */
         int term = 0;
         if (b->ins.len) {
@@ -842,6 +958,9 @@ int codegen_run(Unit *u, const char *outpath) {
             if (tgt == -1000) {
                 FnInst *dz = find_fn("core.divzero");
                 dst = dz ? fn_addr[dz->index] : 0;
+            } else if (tgt == -1001) {
+                FnInst *ob = find_fn("core.oob1");
+                dst = ob ? fn_addr[ob->index] : 0;
             } else if (tgt >= 0 && tgt < nfns) dst = fn_addr[tgt];
             else dst = 0;
             if (dst == 0) {

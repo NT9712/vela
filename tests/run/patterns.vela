@@ -19,8 +19,8 @@ fn main() {
         println(size(n))
     }
     println(bind(7))
-    let a: ? Int = nil
-    let b: ? Int = 3
+    let a: ?Int = nil
+    let b: ?Int = 3
     println(opt(a))
     println(opt(b))
     println(res(ok(5)))
@@ -57,7 +57,7 @@ fn bind(n: Int) -> Str {
         v => "bound {v}",
     }
 }
-fn opt(o: ? Int) -> Str {
+fn opt(o: ?Int) -> Str {
     return match o {
         nil => "nil-case",
         some(v) => "some {v}",

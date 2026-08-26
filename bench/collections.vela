@@ -1,0 +1,48 @@
+// Allocation, hashing, string building and the garbage collector.
+use core
+use std/os
+use std/time
+use std/sort
+
+fn main() {
+    let argv = os.args()
+    let n = if len(argv) > 1{argv[1].to_int() ?? 200000 } else {200000 }
+
+    let t0 = time.mono_ns()
+    let xs: [Int] = []
+    for i in 0..n {
+        xs.push((i * 2654435761) % 1000003)
+    }
+    let t1 = time.mono_ns()
+
+    sort.ints(xs)
+    let t2 = time.mono_ns()
+
+    let m: {Str: Int } = {:}
+    for i in 0..n / 2 {
+        m["key-{i}"] = i
+    }
+    let t3 = time.mono_ns()
+
+    let mut hits = 0
+    for i in 0..n / 2 {
+        if m.has("key-{i}") {
+            hits += 1
+        }
+    }
+    let t4 = time.mono_ns()
+
+    let parts: [Str] = []
+    for i in 0..n / 10 {
+        parts.push(str(i))
+    }
+    let joined = parts.join(",")
+    let t5 = time.mono_ns()
+
+    println("list push {n}      {time.duration_str(t1 - t0)}")
+    println("sort {n}           {time.duration_str(t2 - t1)}")
+    println("map insert {n / 2}  {time.duration_str(t3 - t2)}")
+    println("map lookup {n / 2}  {time.duration_str(t4 - t3)}  hits={hits}")
+    println("join {n / 10}       {time.duration_str(t5 - t4)}  len={len(joined)}")
+    println("gc: {core.gc_collections()} collections, {core.gc_live_bytes() / 1048576} MiB live, {core.gc_heap_bytes() / 1048576} MiB heap")
+}

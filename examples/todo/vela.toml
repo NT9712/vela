@@ -1,0 +1,7 @@
+[package]
+name    = "todo"
+version = "1.0.0"
+main    = "src/main.vela"
+
+[deps]
+store = { path = "./store" }

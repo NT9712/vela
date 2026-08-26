@@ -101,7 +101,7 @@ pub fn shuffle[T](xs: [T]) {
 }
 
 /// A random element, or nil when the list is empty.
-pub fn pick[T](xs: [T]) -> ? T {
+pub fn pick[T](xs: [T]) -> ?T {
     if len(xs) == 0 {
         return nil
     }

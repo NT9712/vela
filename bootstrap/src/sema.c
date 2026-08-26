@@ -1318,6 +1318,72 @@ static Decl *type_path(Expr *base) {
     return NULL;
 }
 
+/* `E.Variant(args...)` — build a value of enum `ed`. */
+static Type *check_enum_ctor(Expr *e, Decl *ed, Type *want) {
+    Vec targs; memset(&targs, 0, sizeof targs);
+    Subst sub; memset(&sub, 0, sizeof sub);
+    for (int i = 0; i < ed->generics.len; i++)
+        subst_put(&sub, (const char *)ed->generics.data[i], NULL);
+    for (int i = 0; i < e->targs.len && i < ed->generics.len; i++)
+        subst_put(&sub, (const char *)ed->generics.data[i],
+                  resolve_type(VEC_AT(&e->targs, TypeExpr, i), cur_mod, cur_fn->subst));
+    if (ed->generics.len && want && want->kind == TY_ENUM && want->decl == ed)
+        for (int i = 0; i < ed->generics.len && i < want->targs.len; i++)
+            subst_put(&sub, (const char *)ed->generics.data[i], VEC_AT(&want->targs, Type, i));
+
+    int v = -1;
+    for (int i = 0; i < ed->variants.len; i++)
+        if (VEC_AT(&ed->variants, EnumVariant, i)->name == e->name) { v = i; break; }
+    if (v < 0) {
+        Diag *d = serr(e->span, "`%s` has no variant `%s`", ed->name, e->name);
+        for (int i = 0; i < ed->variants.len; i++) {
+            EnumVariant *ev = VEC_AT(&ed->variants, EnumVariant, i);
+            if (edit_dist(e->name, ev->name) <= 2) {
+                diag_note(d, NOSPAN, "did you mean `%s.%s`?", ed->name, ev->name);
+                break;
+            }
+        }
+        return ty_int;
+    }
+    EnumVariant *ev = VEC_AT(&ed->variants, EnumVariant, v);
+    if (ed->generics.len) {
+        for (int i = 0; i < e->list.len && i < ev->types.len; i++) {
+            Expr *ai = VEC_AT(&e->list, Expr, i);
+            int q = sema_quiet; sema_quiet = 1;
+            Type *at = check_expr(ai, NULL);
+            sema_quiet = q;
+            unify(VEC_AT(&ev->types, TypeExpr, i), at, &sub, ed->mod);
+            clear_types(ai);
+        }
+        for (int i = 0; i < ed->generics.len; i++)
+            if (!sub.types.data[i]) {
+                serr(e->span, "cannot infer type parameter `%s` of `%s`",
+                     (const char *)ed->generics.data[i], ed->name);
+                sub.types.data[i] = ty_int;
+            }
+        for (int i = 0; i < ed->generics.len; i++) vec_push(&targs, sub.types.data[i]);
+    }
+    Type *et = struct_instance(ed, &targs, e->span);
+    int np = enum_payload_count(et, v);
+    if (e->list.len != np)
+        serr(e->span, "variant `%s.%s` takes %d value%s, found %d",
+             ed->name, ev->name, np, np == 1 ? "" : "s", e->list.len);
+    for (int i = 0; i < e->list.len && i < np; i++) {
+        Expr *a = VEC_AT(&e->list, Expr, i);
+        Type *pt = enum_payload_type(et, v, i);
+        Type *at = check_expr(a, pt);
+        if (!assignable(at, pt)) {
+            char ctx[256];
+            snprintf(ctx, sizeof ctx, "in `%s.%s`", ed->name, ev->name);
+            want_err(a->span, pt, at, ctx);
+        }
+    }
+    e->idx = v;
+    e->builtin = -1;
+    e->type = et;
+    return et;
+}
+
 static Type *check_expr(Expr *e, Type *want) {
     if (!e) return ty_void;
     if (e->type) return e->type;
@@ -1447,8 +1513,20 @@ static Type *check_expr(Expr *e, Type *want) {
             break;
         }
         case E_STRUCT: {
-            Sym *s = scope_get(cur_mod->scope, e->name);
-            Decl *d = s && s->kind == SYM_TYPE ? s->decl : NULL;
+            Decl *d = NULL;
+            if (e->mod) {
+                Module *om = find_used_module(cur_mod, e->mod);
+                if (!om) { serr(e->span, "no module `%s` is in scope", e->mod); r = ty_int; break; }
+                for (int i = 0; i < om->decls.len; i++) {
+                    Decl *c = VEC_AT(&om->decls, Decl, i);
+                    if (c->kind == D_STRUCT && c->name == e->name) { d = c; break; }
+                }
+                if (!d) { serr(e->span, "module `%s` has no struct `%s`", e->mod, e->name); r = ty_int; break; }
+                if (!d->is_pub && om != cur_mod)
+                    serr(e->span, "struct `%s.%s` is private", e->mod, e->name);
+            }
+            Sym *s = d ? NULL : scope_get(cur_mod->scope, e->name);
+            if (!d) d = s && s->kind == SYM_TYPE ? s->decl : NULL;
             if (!d) {
                 Type *sub = subst_get(cur_fn->subst, e->name);
                 if (sub && sub->kind == TY_STRUCT) d = sub->decl;
@@ -1649,21 +1727,16 @@ static Type *check_expr(Expr *e, Type *want) {
             break;
         }
         case E_METHOD: {
-            if (e->a->kind == E_FIELD) {
-                Decl *ed = type_path(e->a);
+            /* `Shape.Circle(x)` and `json.Json.Str(x)` are enum construction. */
+            {
+                Decl *ed = (e->a->kind == E_FIELD) ? type_path(e->a) : NULL;
+                if (!ed && e->a->kind == E_IDENT) {
+                    Sym *ts = scope_get(cur_fn->scope, e->a->name);
+                    if (ts && ts->kind == SYM_TYPE) { e->a->sym = ts; ed = ts->decl; }
+                }
                 if (ed && ed->kind == D_ENUM) {
-                    Expr *fake = NEW(Expr);
-                    *fake = *e->a;
-                    Expr *id = NEW(Expr);
-                    memset(id, 0, sizeof *id);
-                    id->kind = E_IDENT;
-                    id->span = e->a->span;
-                    id->name = e->a->name;
-                    Sym *ts = NEW(Sym);
-                    ts->kind = SYM_TYPE; ts->name = ed->name; ts->decl = ed;
-                    ts->span = ed->span; ts->mod = ed->mod;
-                    id->sym = ts;
-                    e->a = id;
+                    r = check_enum_ctor(e, ed, want);
+                    break;
                 }
             }
             /* module function call? */
@@ -1677,73 +1750,6 @@ static Type *check_expr(Expr *e, Type *want) {
                         vec_push(&targs, resolve_type(VEC_AT(&e->targs, TypeExpr, i), cur_mod, cur_fn->subst));
                     r = module_member(e, s->mod, e->name, &e->list, &targs, e->span, 1);
                     break;
-                }
-                if (s && s->kind == SYM_TYPE && s->decl->kind == D_ENUM) {
-                    Decl *ed = s->decl;
-                    Vec targs; memset(&targs, 0, sizeof targs);
-                    Subst sub; memset(&sub, 0, sizeof sub);
-                    for (int i = 0; i < ed->generics.len; i++)
-                        subst_put(&sub, (const char *)ed->generics.data[i], NULL);
-                    for (int i = 0; i < e->targs.len && i < ed->generics.len; i++)
-                        subst_put(&sub, (const char *)ed->generics.data[i],
-                                  resolve_type(VEC_AT(&e->targs, TypeExpr, i), cur_mod, cur_fn->subst));
-                    if (ed->generics.len && want && want->kind == TY_ENUM && want->decl == ed)
-                        for (int i = 0; i < ed->generics.len && i < want->targs.len; i++)
-                            subst_put(&sub, (const char *)ed->generics.data[i], VEC_AT(&want->targs, Type, i));
-                    /* find variant */
-                    int v = -1;
-                    for (int i = 0; i < ed->variants.len; i++)
-                        if (VEC_AT(&ed->variants, EnumVariant, i)->name == e->name) { v = i; break; }
-                    if (v < 0) {
-                        /* maybe a static method on the enum type */
-                        Diag *d = serr(e->span, "`%s` has no variant `%s`", ed->name, e->name);
-                        for (int i = 0; i < ed->variants.len; i++) {
-                            EnumVariant *ev = VEC_AT(&ed->variants, EnumVariant, i);
-                            if (edit_dist(e->name, ev->name) <= 2) {
-                                diag_note(d, NOSPAN, "did you mean `%s.%s`?", ed->name, ev->name);
-                                break;
-                            }
-                        }
-                        r = ty_int; break;
-                    }
-                    EnumVariant *ev = VEC_AT(&ed->variants, EnumVariant, v);
-                    if (ed->generics.len) {
-                        for (int i = 0; i < e->list.len && i < ev->types.len; i++) {
-                            Expr *ai = VEC_AT(&e->list, Expr, i);
-                            int q = sema_quiet; sema_quiet = 1;
-                            Type *at = check_expr(ai, NULL);
-                            sema_quiet = q;
-                            unify(VEC_AT(&ev->types, TypeExpr, i), at, &sub, ed->mod);
-                            clear_types(ai);
-                        }
-                        for (int i = 0; i < ed->generics.len; i++)
-                            if (!sub.types.data[i]) {
-                                serr(e->span, "cannot infer type parameter `%s` of `%s`",
-                                     (const char *)ed->generics.data[i], ed->name);
-                                sub.types.data[i] = ty_int;
-                            }
-                        for (int i = 0; i < ed->generics.len; i++) vec_push(&targs, sub.types.data[i]);
-                    }
-                    Type *et = struct_instance(ed, &targs, e->span);
-                    int np = enum_payload_count(et, v);
-                    if (e->list.len != np)
-                        serr(e->span, "variant `%s.%s` takes %d value%s, found %d",
-                             ed->name, ev->name, np, np == 1 ? "" : "s", e->list.len);
-                    for (int i = 0; i < e->list.len && i < np; i++) {
-                        Expr *a = VEC_AT(&e->list, Expr, i);
-                        a->type = NULL;
-                        Type *pt = enum_payload_type(et, v, i);
-                        Type *at = check_expr(a, pt);
-                        if (!assignable(at, pt)) {
-                            char ctx[256];
-                            snprintf(ctx, sizeof ctx, "in `%s.%s`", ed->name, ev->name);
-                            want_err(a->span, pt, at, ctx);
-                        }
-                    }
-                    e->idx = v;
-                    e->builtin = -1;
-                    e->type = et;
-                    return et;
                 }
             }
             Type *recv = check_expr(e->a, NULL);

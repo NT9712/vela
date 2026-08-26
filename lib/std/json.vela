@@ -237,7 +237,7 @@ fn P.object(self) -> !Json {
 // --------------------------------------------------------------- accessors
 
 /// The value at `key`, when this is an object.
-pub fn Json.get(self, key: Str) -> ? Json {
+pub fn Json.get(self, key: Str) -> ?Json {
     return match self {
         Json.Obj(m) => m[key],
         _ => nil,
@@ -245,14 +245,14 @@ pub fn Json.get(self, key: Str) -> ? Json {
 }
 
 /// The element at `i`, when this is an array.
-pub fn Json.at(self, i: Int) -> ? Json {
+pub fn Json.at(self, i: Int) -> ?Json {
     return match self {
         Json.List(xs) => list_at(xs, i),
         _ => nil,
     }
 }
 
-fn list_at(xs: [Json], i: Int) -> ? Json {
+fn list_at(xs: [Json], i: Int) -> ?Json {
     if i < 0 or i >= len(xs) {
         return nil
     }
@@ -260,7 +260,7 @@ fn list_at(xs: [Json], i: Int) -> ? Json {
 }
 
 /// The string contents, when this is a string.
-pub fn Json.as_str(self) -> ? Str {
+pub fn Json.as_str(self) -> ?Str {
     return match self {
         Json.Str(s) => s,
         _ => nil,
@@ -268,7 +268,7 @@ pub fn Json.as_str(self) -> ? Str {
 }
 
 /// The numeric value, when this is a number.
-pub fn Json.as_float(self) -> ? Float {
+pub fn Json.as_float(self) -> ?Float {
     return match self {
         Json.Num(f) => f,
         _ => nil,
@@ -276,7 +276,7 @@ pub fn Json.as_float(self) -> ? Float {
 }
 
 /// The numeric value truncated to an integer.
-pub fn Json.as_int(self) -> ? Int {
+pub fn Json.as_int(self) -> ?Int {
     return match self {
         Json.Num(f) => int(f),
         _ => nil,
@@ -284,7 +284,7 @@ pub fn Json.as_int(self) -> ? Int {
 }
 
 /// The boolean value, when this is a boolean.
-pub fn Json.as_bool(self) -> ? Bool {
+pub fn Json.as_bool(self) -> ?Bool {
     return match self {
         Json.Bool(b) => b,
         _ => nil,

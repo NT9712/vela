@@ -79,10 +79,12 @@ fail_tests() {
 unit_tests() {
   echo "unit tests (\`test\` blocks)"
   for f in "$ROOT"/tests/lib/*.vela "$ROOT"/examples/calculator.vela \
-           "$ROOT"/examples/wordcount.vela "$ROOT"/examples/http_server.vela; do
+           "$ROOT"/examples/wordcount.vela "$ROOT"/examples/http_server.vela \
+           "$ROOT"/examples/life.vela "$ROOT"/examples/todo/store/src/store.vela \
+           "$ROOT"/examples/todo/src/main.vela; do
     [ -f "$f" ] || continue
     name="$(basename "$f" .vela)"
-    if ! "$VELAC" -q --no-color --test -o "$TMP/t-$name" "$f" >"$TMP/t-$name.err" 2>&1; then
+    if ! "$VELAC" -q --no-color --dep "$ROOT/examples/todo" --test -o "$TMP/t-$name" "$f" >"$TMP/t-$name.err" 2>&1; then
       bad "unit:$name" "$(head -20 "$TMP/t-$name.err")"; continue
     fi
     if out="$(timeout 60 "$TMP/t-$name" 2>&1)"; then
@@ -95,6 +97,48 @@ unit_tests() {
 }
 
 # ------------------------------------------------------------------ toolchain
+
+lsp_tests() {
+  echo "language server"
+  local LSP="$ROOT/bin/vela-lsp"
+  [ -x "$LSP" ] || { skip "lsp" "bin/vela-lsp not built"; return; }
+  python3 - "$TMP" <<'PY'
+import sys, json
+tmp = sys.argv[1]
+def msg(o):
+    b = json.dumps(o).encode()
+    return b"Content-Length: %d\r\n\r\n" % len(b) + b
+src = "/// Adds two numbers.\nfn add(a: Int, b: Int) -> Int {\n    return a + b\n}\n\nfn main() {\n    let s = \"x\" + 1\n}\n"
+out = b""
+out += msg({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///tmp"}})
+out += msg({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/x.vela","text":src}}})
+out += msg({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///tmp/x.vela"},"position":{"line":6,"character":6}}})
+out += msg({"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///tmp/x.vela"}}})
+out += msg({"jsonrpc":"2.0","id":4,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///tmp/x.vela"},"options":{}}})
+out += msg({"jsonrpc":"2.0","id":5,"method":"shutdown"})
+out += msg({"jsonrpc":"2.0","method":"exit"})
+open(tmp+"/lsp_in.bin","wb").write(out)
+PY
+  timeout 60 "$LSP" < "$TMP/lsp_in.bin" > "$TMP/lsp_out.bin" 2>/dev/null
+  local res
+  res="$(python3 - "$TMP/lsp_out.bin" <<'PY'
+import re, sys, json
+data = open(sys.argv[1],'rb').read().decode(errors='replace')
+msgs = []
+for m in re.finditer(r'Content-Length: (\d+)\r\n\r\n', data):
+    n = int(m.group(1))
+    try: msgs.append(json.loads(data[m.end():m.end()+n]))
+    except Exception: print("BADJSON"); sys.exit(0)
+have_caps  = any(m.get("id")==1 and "capabilities" in (m.get("result") or {}) for m in msgs)
+have_diag  = any(m.get("method")=="textDocument/publishDiagnostics" and
+                 m["params"]["diagnostics"] for m in msgs)
+have_sym   = any(m.get("id")==3 and isinstance(m.get("result"), list) and m["result"] for m in msgs)
+print("OK" if (have_caps and have_diag and have_sym) else "MISSING")
+PY
+)"
+  [ "$res" = "OK" ] && ok "lsp: initialize, diagnostics, symbols, formatting" \
+                    || bad "lsp" "$res"
+}
 
 cli_tests() {
   echo "cli tests"
@@ -270,9 +314,10 @@ case "$what" in
   fail) fail_tests ;;
   unit) unit_tests ;;
   cli)  cli_tests ;;
+  lsp)  lsp_tests ;;
   fmt)  fmt_tests ;;
   fuzz) fuzz_tests ;;
-  *)    run_tests; fail_tests; unit_tests; fmt_tests; cli_tests; regress_tests; fuzz_tests ;;
+  *)    run_tests; fail_tests; unit_tests; fmt_tests; cli_tests; lsp_tests; regress_tests; fuzz_tests ;;
 esac
 
 echo
