@@ -48,7 +48,11 @@ jobs:
           cd dist
           for f in *.tar.gz; do sha256sum "$f" > "$f.sha256"; done
           ls -l
-          echo "sha=$(cat *.tar.gz.sha256)" >> "$GITHUB_OUTPUT"
+          {
+            echo 'sha<<VELA_EOF'
+            cat *.tar.gz.sha256
+            echo 'VELA_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: release notes
         run: |
