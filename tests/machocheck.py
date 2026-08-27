@@ -140,6 +140,14 @@ def main(path):
     ident = d[cd + ident_off:]
     ident = ident[:ident.index(b"\0")].decode()
 
+    zero32 = bytes(32)
+    # Special slots (-2, -1) exist only if nspecial > 0; they are at hash_off - nspecial*32
+    if nspecial > 0:
+        special_start = cd + hash_off - nspecial * 32
+        for i in range(nspecial):
+            got = d[special_start + i * 32:special_start + (i + 1) * 32]
+            if got != zero32:
+                fail("special slot %d is not all zeros" % (i - nspecial))
     for i in range(nslots):
         start = i * 4096
         want = hashlib.sha256(d[start:min(start + 4096, code_limit)]).digest()

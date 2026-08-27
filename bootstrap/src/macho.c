@@ -262,10 +262,9 @@ int macho_write(const MachImage *img, const char *path) {
     be32(&cd, 0);                       /* nSpecialSlots */
     be32(&cd, nslots);
     be32(&cd, (uint32_t)sig_off);       /* codeLimit */
-    buf_u8(&cd, 32);                    /* hashSize */
-    buf_u8(&cd, 2);                     /* hashType: SHA-256 */
-    buf_u8(&cd, 0);                     /* platform */
-    buf_u8(&cd, 12);                    /* pageSize: log2(4096) */
+    /* Pack the 4 uint8_t fields into a be32 to avoid buf_u8 alignment issues:
+       hashSize=32, hashType=2, platform=0, pageSize=12 -> 0x2002000C */
+    be32(&cd, 0x2002000C);
     be32(&cd, 0);                       /* spare2 */
     be32(&cd, 0);                       /* scatterOffset */
     be32(&cd, 0);                       /* teamOffset */
