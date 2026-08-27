@@ -102,6 +102,17 @@ jobs:
           ./bin/vela version
           file bin/vela | grep -q Mach-O
 
+      - name: golden programs, the standard library and the toolchain
+        run: ./tests/run.sh macos
+      - name: the rest of the suite, natively
+        run: |
+          set -e
+          ./tests/run.sh run
+          ./tests/run.sh fail
+          ./tests/run.sh unit
+          ./tests/run.sh fmt
+          ./tests/run.sh cli
+
       - name: code-signing diagnostics (always collected)
         if: always()
         run: |
@@ -119,8 +130,6 @@ jobs:
           /tmp/diag2 ; echo "resigned-exit=$?"
           echo "== our signature bytes =="
           python3 tests/sigdump.py /tmp/diag
-      - name: golden programs, the standard library and the toolchain
-        run: ./tests/run.sh macos
       - name: note about arm64 macOS execution
         if: matrix.arch == 'arm64'
         run: |
