@@ -128,6 +128,7 @@ static uint64_t up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 #define LC_SEGMENT_64     0x19
 #define LC_UNIXTHREAD     0x05
 #define LC_CODE_SIGNATURE 0x1d
+#define LC_BUILD_VERSION 0x32
 
 /* One LC_SEGMENT_64 with at most one section. */
 static void put_segment(Buf *o, const char *seg, uint64_t vmaddr, uint64_t vmsize,
@@ -170,13 +171,15 @@ int macho_write(const MachImage *img, const char *path) {
     uint32_t cd_len = (uint32_t)(88 + ident_len + (size_t)nslots * 32);
     uint32_t sig_len = (uint32_t)up(20 + cd_len, 16);
 
-    int ncmds = 6;
+    /* LC_BUILD_VERSION is mandatory on arm64 macOS (AMFI checks for it). */
+    int ncmds = 7;
     uint32_t sizeofcmds = 72          /* __PAGEZERO */
                         + 72 + 80     /* __TEXT + __text */
                         + 72 + 80     /* __DATA + __bss */
                         + 72          /* __LINKEDIT */
                         + (img->arm ? 16 + 68 * 4 : 16 + 42 * 4)
-                        + 16;         /* LC_CODE_SIGNATURE */
+                        + 16          /* LC_CODE_SIGNATURE */
+                        + 32;         /* LC_BUILD_VERSION: 24 + 1 tool * 8 */
 
     Buf out;
     memset(&out, 0, sizeof out);
@@ -228,6 +231,16 @@ int macho_write(const MachImage *img, const char *path) {
     buf_u32(&out, 16);
     buf_u32(&out, (uint32_t)sig_off);
     buf_u32(&out, sig_len);
+
+    /* LC_BUILD_VERSION: required on arm64 macOS. */
+    buf_u32(&out, LC_BUILD_VERSION);
+    buf_u32(&out, 32);
+    buf_u32(&out, 1);                 /* platform: macOS */
+    buf_u32(&out, 0x000E0000);        /* minos: 14.0 */
+    buf_u32(&out, 0x000E0000);        /* sdk: 14.0 */
+    buf_u32(&out, 1);                 /* one tool entry */
+    buf_u32(&out, 3);                 /* type: 3 = ld */
+    buf_u32(&out, 0x000E0000);        /* version: 14.0 */
 
     if (out.len > page) fatal("mach-o load commands overflow the first page");
     while (out.len < page) buf_u8(&out, 0);
