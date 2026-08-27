@@ -157,8 +157,8 @@ jobs:
           python3 tests/machocheck.py /tmp/other
       - name: the ad-hoc signature satisfies the system, not just our checker
         run: |
-          codesign --verify --verbose /tmp/hello
-          codesign --display --verbose=2 /tmp/hello 2>&1 | head -20
+          codesign --verify --verbose /tmp/other
+          codesign --display --verbose=2 /tmp/other 2>&1 | head -20
 
   windows:
     name: cross-compile on Linux, execute on Windows
