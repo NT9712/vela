@@ -177,16 +177,14 @@ int macho_write(const MachImage *img, const char *path) {
 
     /* LC_BUILD_VERSION is mandatory on arm64 macOS (AMFI checks for it). */
     /* System linker includes these optional commands; kernel may expect them. */
-    int ncmds = 13;
-    /* LC_LOAD_DYLIB + LC_MAIN replace LC_UNIXTHREAD */
-    /* LC_LOAD_DYLIB: 28 fixed + string; LC_MAIN: 24 */
-    uint32_t dyn_cmds = 28 + (uint32_t)strlen("/usr/lib/libSystem.B.dylib") + 1 + 24;
+    int ncmds = 11;
+    /* LC_UNIXTHREAD: static binary model */
+    uint32_t unixthread_sz = img->arm ? 16 + 68 * 4 : 16 + 42 * 4;
     uint32_t sizeofcmds = 72          /* __PAGEZERO */
                         + 72 + 80     /* __TEXT + __text */
                         + 72 + 80     /* __DATA + __bss */
                         + 72          /* __LINKEDIT */
-                        + dyn_cmds
-                        + 24          /* LC_UUID */
+                        + unixthread_sz
                         + 16          /* LC_CODE_SIGNATURE */
                         + 32          /* LC_BUILD_VERSION */
                         + 56          /* LC_DYLD_INFO_ONLY */
@@ -219,26 +217,29 @@ int macho_write(const MachImage *img, const char *path) {
     put_segment(&out, "__LINKEDIT", link_vaddr, up(sig_len, page),
                 sig_off, sig_len, 1, 1, NULL, 0, 0, 0, 0, 0);
 
-    /* Dynamic binary: use LC_LOAD_DYLIB + LC_MAIN instead of LC_UNIXTHREAD.
-       This is required on arm64 macOS; the kernel expects dyld to be involved. */
-        /* LC_LOAD_DYLIB for libSystem.
-       dylib_command: cmd(4) + cmdsize(4) + dylib{name(4),timestamp(4),cur_ver(4),compat_ver(4),flags(4)} = 28 bytes fixed. */
-    const char *libsys = "/usr/lib/libSystem.B.dylib";
-    size_t libsys_len = strlen(libsys) + 1;
-    buf_u32(&out, 0x0c);                    /* LC_LOAD_DYLIB */
-    buf_u32(&out, (uint32_t)(28 + libsys_len));  /* cmdsize */
-    buf_u32(&out, 24);                      /* dylib.name.offset */
-    buf_u32(&out, 0);                       /* dylib.timestamp */
-    buf_u32(&out, 0);                       /* dylib.current_version */
-    buf_u32(&out, 0);                       /* dylib.compatibility_version */
-    buf_u32(&out, 0x00000001);              /* dylib.flags: never unload */
-    buf_put(&out, (const uint8_t *)libsys, libsys_len);
-
-    /* LC_MAIN: entry point for dyld */
-    buf_u32(&out, 0x28 | 0x80000000);       /* LC_MAIN | LC_REQ_DYLD */
-    buf_u32(&out, 24);
-    buf_u64(&out, img->entry - img->text_vaddr);  /* entryoff */
-    buf_u64(&out, 0);                       /* stacksize (0 = default) */
+    /* LC_UNIXTHREAD: a register dump the kernel restores. No dyld involved. */
+    buf_u32(&out, LC_UNIXTHREAD);
+    if (img->arm) {
+        buf_u32(&out, 16 + 68 * 4);
+        buf_u32(&out, 6);               /* ARM_THREAD_STATE64 */
+        buf_u32(&out, 68);
+        for (int i = 0; i < 68; i++) {
+            /* x0-x28, fp, lr, sp, pc, cpsr, pad: pc is the 33rd 64-bit slot */
+            if (i == 64) { buf_u32(&out, (uint32_t)img->entry); continue; }
+            if (i == 65) { buf_u32(&out, (uint32_t)(img->entry >> 32)); continue; }
+            buf_u32(&out, 0);
+        }
+    } else {
+        buf_u32(&out, 16 + 42 * 4);
+        buf_u32(&out, 4);               /* x86_THREAD_STATE64 */
+        buf_u32(&out, 42);
+        for (int i = 0; i < 42; i++) {
+            /* rax..r15 then rip: rip is the 17th 64-bit slot */
+            if (i == 32) { buf_u32(&out, (uint32_t)img->entry); continue; }
+            if (i == 33) { buf_u32(&out, (uint32_t)(img->entry >> 32)); continue; }
+            buf_u32(&out, 0);
+        }
+    }
 
     buf_u32(&out, LC_CODE_SIGNATURE);
     buf_u32(&out, 16);
@@ -275,16 +276,6 @@ int macho_write(const MachImage *img, const char *path) {
     buf_u32(&out, LC_SOURCE_VERSION);
     buf_u32(&out, 16);
     buf_u64(&out, 0x0001000000000000ULL);  /* A.B.C.D.E = 1.0.0.0.0 */
-
-    /* LC_UUID: required by some tools; generate a deterministic UUID from the content. */
-    buf_u32(&out, 0x1b);              /* LC_UUID */
-    buf_u32(&out, 24);
-    /* Simple deterministic UUID: hash of the text segment */
-    Sha256 s256; uint8_t uuid[16];
-    sha_init(&s256);
-    sha_update(&s256, img->text->data, img->text->len);
-    sha_final(&s256, uuid);
-    buf_put(&out, uuid, 16);
 
     if (out.len > page) fatal("mach-o load commands overflow the first page");
     while (out.len < page) buf_u8(&out, 0);
