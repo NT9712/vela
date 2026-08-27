@@ -190,7 +190,10 @@ int macho_write(const MachImage *img, const char *path) {
     buf_u32(&out, 2);                                     /* MH_EXECUTE */
     buf_u32(&out, (uint32_t)ncmds);
     buf_u32(&out, sizeofcmds);
-    buf_u32(&out, 1);                                     /* MH_NOUNDEFS */
+    /* MH_PIE (0x200000) is required on arm64 macOS by AMFI policy.
+       MH_NOUNDEFS (1) is also set. */
+    uint32_t hdr_flags = 1 | (img->arm ? 0x200000 : 0);
+    buf_u32(&out, hdr_flags);
     buf_u32(&out, 0);
 
     put_segment(&out, "__PAGEZERO", 0, base, 0, 0, 0, 0, NULL, 0, 0, 0, 0, 0);
