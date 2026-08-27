@@ -115,6 +115,7 @@ jobs:
 
       - name: code-signing diagnostics (always collected)
         if: always()
+        continue-on-error: true
         run: |
           set +e
           sw_vers
