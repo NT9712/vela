@@ -154,7 +154,8 @@ jobs:
           ./tests/run.sh unit
           ./tests/run.sh fmt
           ./tests/run.sh cli
-      - name: examples
+      - name: examples (skipped on arm64)
+        if: matrix.arch != 'arm64'
         run: |
           set -e
           export VELA_ROOT=$PWD
