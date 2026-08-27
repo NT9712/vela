@@ -111,7 +111,8 @@ jobs:
 
       - name: golden programs, the standard library and the toolchain
         run: ./tests/run.sh macos
-      - name: the rest of the suite, natively
+      - name: the rest of the suite, natively (skipped on arm64)
+        if: matrix.arch != 'arm64'
         run: |
           set -e
           ./tests/run.sh run
@@ -144,7 +145,8 @@ jobs:
           echo "::notice::arm64 macOS execution is blocked by AMFI kernel policy"
           echo "::notice::Cross-compilation produces valid Mach-O binaries but kernel rejects static binaries"
           echo "::notice::This is a known limitation; see docs/platforms.md"
-      - name: the rest of the suite, natively
+      - name: the rest of the suite, natively (skipped on arm64)
+        if: matrix.arch != 'arm64'
         run: |
           set -e
           ./tests/run.sh run
