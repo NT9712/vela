@@ -88,11 +88,25 @@ at `0x1_0000_0000`, and arm64 requires 16 KiB segment alignment.
 arm64 macOS will not execute an unsigned binary. Not "warn" — the kernel kills
 the process. So `velac` signs every Mach-O it writes with an ad-hoc signature:
 an embedded `CodeDirectory` holding a SHA-256 hash of every 4 KiB page, which
-is exactly what `codesign -s -` produces. The SHA-256 implementation is in
-`bootstrap/src/macho.c`; adding a dependency on `codesign` would have meant the
-toolchain only worked on a Mac.
+is exactly what `codesign -s -` produces.
 
-`codesign --verify` accepts the result. So does the kernel.
+**Important limitation:** The kernel additionally requires the binary to be a
+dynamic executable (linked against `libSystem` via `LC_LOAD_DYLIB` and using
+`LC_MAIN` entry point). Our static-binaries model (`LC_UNIXTHREAD`) produces
+structurally valid Mach-O files with correct ad-hoc signatures that pass
+`codesign --verify`, but the kernel still kills them with `SIGKILL` (exit 137)
+on arm64. This is a known AMFI policy: only dynamic binaries are allowed to run
+on Apple Silicon.
+
+As a result:
+
+- Cross-compilation to `macos-arm64` works and produces valid Mach-O binaries
+- The binaries are structurally sound and pass independent verification
+- Execution on actual arm64 macOS hardware is currently blocked
+- A future version may switch to the dynamic model to enable execution
+
+x86_64 macOS does not have this restriction; the static model executes fine on
+Intel Macs.
 
 ## What is verified, and how
 
