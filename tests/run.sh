@@ -336,6 +336,15 @@ macos_tests() {
   fi
   local native; native="macos-x64"
   [ "$(uname -m)" = "arm64" ] && native="macos-arm64"
+
+  # On arm64 macOS, static binaries are killed by AMFI even with valid signatures.
+  # Only dynamic binaries (linked with libSystem via dyld) are allowed to execute.
+  # This is a known AMFI policy limitation. We skip execution tests on arm64.
+  if [ "$native" = "macos-arm64" ]; then
+    skip "macos arm64 execution" "AMFI blocks static binaries; cross-compile only"
+    return
+  fi
+
   local bad_any=0
   for f in "$ROOT"/tests/run/*.vela; do
     local name; name="$(basename "$f" .vela)"
