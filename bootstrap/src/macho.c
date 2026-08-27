@@ -128,6 +128,10 @@ static uint64_t up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 #define LC_SEGMENT_64     0x19
 #define LC_UNIXTHREAD     0x05
 #define LC_CODE_SIGNATURE 0x1d
+#define LC_DYLD_INFO_ONLY     0x22
+#define LC_FUNCTION_STARTS    0x26
+#define LC_DATA_IN_CODE       0x29
+#define LC_SOURCE_VERSION     0x2A
 #define LC_BUILD_VERSION 0x32
 
 /* One LC_SEGMENT_64 with at most one section. */
@@ -172,14 +176,19 @@ int macho_write(const MachImage *img, const char *path) {
     uint32_t sig_len = (uint32_t)up(20 + cd_len, 16);
 
     /* LC_BUILD_VERSION is mandatory on arm64 macOS (AMFI checks for it). */
-    int ncmds = 7;
+    /* System linker includes these optional commands; kernel may expect them. */
+    int ncmds = 11;
     uint32_t sizeofcmds = 72          /* __PAGEZERO */
                         + 72 + 80     /* __TEXT + __text */
                         + 72 + 80     /* __DATA + __bss */
                         + 72          /* __LINKEDIT */
                         + (img->arm ? 16 + 68 * 4 : 16 + 42 * 4)
                         + 16          /* LC_CODE_SIGNATURE */
-                        + 32;         /* LC_BUILD_VERSION: 24 + 1 tool * 8 */
+                        + 32          /* LC_BUILD_VERSION */
+                        + 56          /* LC_DYLD_INFO_ONLY */
+                        + 16          /* LC_FUNCTION_STARTS */
+                        + 16          /* LC_DATA_IN_CODE */
+                        + 16;         /* LC_SOURCE_VERSION */
 
     Buf out;
     memset(&out, 0, sizeof out);
@@ -244,6 +253,27 @@ int macho_write(const MachImage *img, const char *path) {
     buf_u32(&out, 1);                 /* one tool entry */
     buf_u32(&out, 3);                 /* type: 3 = ld */
     buf_u32(&out, 0x000E0000);        /* version: 14.0 */
+
+    /* LC_DYLD_INFO_ONLY: empty, but kernel may expect it.
+       cmdsize = 8 (header) + 12*4 (data) = 56. */
+    buf_u32(&out, LC_DYLD_INFO_ONLY);
+    buf_u32(&out, 56);
+    for (int i = 0; i < 12; i++) buf_u32(&out, 0);  /* 12 uint32_t fields */
+
+    /* LC_FUNCTION_STARTS: empty. */
+    buf_u32(&out, LC_FUNCTION_STARTS);
+    buf_u32(&out, 16);
+    buf_u32(&out, 0); buf_u32(&out, 0);  /* dataoff, datasize */
+
+    /* LC_DATA_IN_CODE: empty. */
+    buf_u32(&out, LC_DATA_IN_CODE);
+    buf_u32(&out, 16);
+    buf_u32(&out, 0); buf_u32(&out, 0);
+
+    /* LC_SOURCE_VERSION: version 1.0.0. */
+    buf_u32(&out, LC_SOURCE_VERSION);
+    buf_u32(&out, 16);
+    buf_u64(&out, 0x0001000000000000ULL);  /* A.B.C.D.E = 1.0.0.0.0 */
 
     if (out.len > page) fatal("mach-o load commands overflow the first page");
     while (out.len < page) buf_u8(&out, 0);
