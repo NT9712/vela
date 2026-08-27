@@ -177,7 +177,7 @@ int macho_write(const MachImage *img, const char *path) {
 
     /* LC_BUILD_VERSION is mandatory on arm64 macOS (AMFI checks for it). */
     /* System linker includes these optional commands; kernel may expect them. */
-    int ncmds = 12;
+    int ncmds = 13;
     /* LC_LOAD_DYLIB + LC_MAIN replace LC_UNIXTHREAD */
     /* LC_LOAD_DYLIB: 28 fixed + string; LC_MAIN: 24 */
     uint32_t dyn_cmds = 28 + (uint32_t)strlen("/usr/lib/libSystem.B.dylib") + 1 + 24;
@@ -186,6 +186,7 @@ int macho_write(const MachImage *img, const char *path) {
                         + 72 + 80     /* __DATA + __bss */
                         + 72          /* __LINKEDIT */
                         + dyn_cmds
+                        + 24          /* LC_UUID */
                         + 16          /* LC_CODE_SIGNATURE */
                         + 32          /* LC_BUILD_VERSION */
                         + 56          /* LC_DYLD_INFO_ONLY */
@@ -274,6 +275,16 @@ int macho_write(const MachImage *img, const char *path) {
     buf_u32(&out, LC_SOURCE_VERSION);
     buf_u32(&out, 16);
     buf_u64(&out, 0x0001000000000000ULL);  /* A.B.C.D.E = 1.0.0.0.0 */
+
+    /* LC_UUID: required by some tools; generate a deterministic UUID from the content. */
+    buf_u32(&out, 0x1b);              /* LC_UUID */
+    buf_u32(&out, 24);
+    /* Simple deterministic UUID: hash of the text segment */
+    Sha256 s256; uint8_t uuid[16];
+    sha_init(&s256);
+    sha_update(&s256, img->text->data, img->text->len);
+    sha_final(&s256, uuid);
+    buf_put(&out, uuid, 16);
 
     if (out.len > page) fatal("mach-o load commands overflow the first page");
     while (out.len < page) buf_u8(&out, 0);
