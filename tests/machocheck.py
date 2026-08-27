@@ -72,6 +72,15 @@ def main(path):
             if count != want_count:
                 fail("thread state count %d, expected %d" % (count, want_count))
             entry = struct.unpack_from("<Q", d, off + 16 + pc_idx * 8)[0]
+        elif cmd == (0x28 | 0x80000000):  # LC_MAIN | LC_REQ_DYLD
+            entryoff, stacksize = struct.unpack_from("<QQ", d, off + 8)
+            # Find __TEXT segment to compute entry address
+            for seg_name, vmaddr, vmsize, fileoff, filesize, _ in segs:
+                if seg_name == "__TEXT":
+                    entry = vmaddr + entryoff
+                    break
+            else:
+                fail("LC_MAIN found but no __TEXT segment")
         elif cmd == LC_CODE_SIGNATURE:
             sigoff, sigsize = struct.unpack_from("<II", d, off + 8)
             sig = (sigoff, sigsize)
@@ -104,7 +113,7 @@ def main(path):
             fail("segment %s is not %d-byte aligned" % (name, page))
 
     if entry is None:
-        fail("no LC_UNIXTHREAD, so the kernel has no entry point")
+        fail("no LC_UNIXTHREAD or LC_MAIN, so the kernel has no entry point")
     if not (text[1] <= entry < text[1] + text[2]):
         fail("entry 0x%x is not inside __TEXT" % entry)
 
