@@ -1,0 +1,99 @@
+// Async I/O for macOS (kqueue)
+
+use core
+use core/sys
+
+pub const EV_READ: Int = 1
+pub const EV_WRITE: Int = 2
+pub const EV_ERROR: Int = 4
+pub const EV_HUP: Int = 8
+
+pub struct PollHandle {
+    handle: Int,
+}
+
+pub struct PollEvent {
+    fd: Int,
+    events: Int,
+    data: Int,
+}
+
+pub fn poll_new() -> !PollHandle {
+    let handle = sys.kqueue()
+    if handle < 0 { return err("kqueue failed") }
+    return ok(PollHandle{ handle: handle })
+}
+
+pub fn poll_add(p: PollHandle, fd: Int, events: Int, data: Int) -> !Void {
+    let mut changes = [0, 0, 0, 0, 0, 0]
+    // EV_ADD | EV_ENABLE
+    let flags = 0x0001 | 0x0004
+    if events & 1 != 0 {
+        // EVFILT_READ = -1
+        changes[0] = fd
+        changes[1] = -1
+        changes[2] = flags
+        changes[3] = 0
+        changes[4] = 0
+        changes[5] = data
+        if sys.kevent(p.handle, @addr(changes) + 16, 1, 0, 0, 0) < 0 {
+            return err("kevent add read failed")
+        }
+    }
+    if events & 2 != 0 {
+        // EVFILT_WRITE = -2
+        changes[0] = fd
+        changes[1] = -2
+        changes[2] = flags
+        changes[3] = 0
+        changes[4] = 0
+        changes[5] = data
+        if sys.kevent(p.handle, @addr(changes) + 16, 1, 0, 0, 0) < 0 {
+            return err("kevent add write failed")
+        }
+    }
+    return ok(void)
+}
+
+pub fn poll_wait(p: PollHandle, timeout_ms: Int) -> ![PollEvent] {
+    let events = core.alloc(96, 0) + 16  // 64 bytes per kevent * 8
+    let mut ts = [0, 0, 0, 0]
+    @store64(@addr(ts) + 16, timeout_ms / 1000)
+    @store64(@addr(ts) + 24, (timeout_ms % 1000) * 1000000)
+    let events_ptr = core.alloc(64 * 8, 0) + 16
+    let count = sys.kevent(p.handle, 0, 0, events_ptr, 8, @addr(ts) + 16)
+    if count < 0 { return err("kevent wait failed") }
+    
+    let out: [PollEvent] = []
+    let mut i = 0
+    while i < count {
+        let ident = @load64(events_ptr + i * 64)
+        let filter = @load64(events_ptr + i * 64 + 8)
+        let flags = @load64(events_ptr + i * 64 + 16)
+        let fflags = @load64(events_ptr + i * 64 + 24)
+        let data = @load64(events_ptr + i * 64 + 32)
+        let udata = @load64(events_ptr + i * 64 + 40)
+        let mut ev = 0
+        if filter == -1 { ev = ev | 1 }
+        if filter == -2 { ev = ev | 2 }
+        if flags & 0x0008 != 0 { ev = ev | 4 }  // EV_ERROR
+        if flags & 0x0010 != 0 { ev = ev | 8 }  // EV_EOF
+        out.push(PollEvent{ fd: ident, events: ev, data: udata })
+        i += 1
+    }
+    return ok(out)
+}
+
+pub fn poll_close(p: PollHandle) {
+    sys.close(p.handle)
+}
+
+fn scratch(off: Int, n: Int) -> Int {
+    let p = @rt_base() + 512 + off
+    let mut i = 0
+    while i < n {
+        @store8(p + i, 0)
+        i += 1
+    }
+    return p
+}

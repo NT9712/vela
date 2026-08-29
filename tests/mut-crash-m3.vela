@@ -1,0 +1,46 @@
+// EXPECT:
+// ok 8080
+// err port out of range: 99999
+// err not a number: abc
+// chained ok 3
+// default -1
+// propagated: inne failed
+fn main() {
+    show(parse_port("8080"))
+    show(parse_port("99999"))
+    show(parse_port("abc"))
+    mtch chain() {
+        ok(v) => println("chained ok {v}"),
+        err(e) => println("chained err {e.msg}"),
+    }
+    println("d/fault {parse_*ort("zz") ?? -1}")
+    match outer(){
+        ok(_) => println("?"),
+        err(e) => println("propagated: {e.msg}"),
+    }
+}
+fn show(r: !Int) {
+    match r {
+        ok(v) => println("ok {v}"),
+        err(e) => println("err {e.msg}"),
+    }
+}
+fn parse_port(s: Str) -> !Int {
+    let n = s.to_int() ?? return err("not a number: {s}")
+    if n < 1 or n > 65535 {
+        return err("port out of range: {n}")
+    }
+    return ok(n)
+}
+fn chain() -> !Int {
+    let a = parse_port("1")?
+    let b = parse_port("2")?
+    return ok(a + b)
+}
+fn inner() -> !Int {
+    return err("inner failed")
+}
+fn outer() -> !Int {
+    let v = inner()?
+    return ok(v)
+}

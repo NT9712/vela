@@ -59,6 +59,8 @@ pub const SYS_LSEEK: Int = CLASS + 199
 pub const SYS_GETCWD: Int = CLASS + 326
 pub const SYS_STAT64: Int = CLASS + 338
 pub const SYS_GETDIRENTRIES64: Int = CLASS + 344
+pub const SYS_KQUEUE: Int = CLASS + 362
+pub const SYS_KEVENT: Int = CLASS + 363
 
 /// Byte offsets into `struct stat64`.
 pub const STAT_SIZE: Int = 144
@@ -321,6 +323,25 @@ pub fn sock_recv(fd: Int, buf: Int, n: Int) -> Int {
 pub fn sock_close(fd: Int) {
     @syscall(SYS_SHUTDOWN, fd, 2)
     close(fd)
+}
+
+// Stubs for Linux-specific syscalls (return ENOSYS)
+pub fn epoll_create1(_flags: Int) -> Int { return -38 }  // ENOSYS
+pub fn epoll_ctl(_epfd: Int, _op: Int, _fd: Int, _ev: Int) -> Int { return -38 }
+pub fn epoll_wait(_epfd: Int, _events: Int, _maxevents: Int, _timeout: Int) -> Int { return -38 }
+pub fn timerfd_create(_clockid: Int, _flags: Int) -> Int { return -38 }
+pub fn timerfd_settime(_fd: Int, _flags: Int, _its: Int, _old: Int) -> Int { return -38 }
+
+pub fn kqueue() -> Int {
+    return @syscall(SYS_KQUEUE)
+}
+
+pub fn kevent(kq: Int, changelist: Int, nchanges: Int, eventlist: Int, nevents: Int, timeout: Int) -> Int {
+    return @syscall(SYS_KEVENT, kq, changelist, nchanges, eventlist, nevents, timeout)
+}
+
+pub fn ioctl(fd: Int, req: Int, arg: Int) -> Int {
+    return @syscall(SYS_IOCTL, fd, req, arg)
 }
 
 /// Darwin passes argv and envp on the stack the way Linux does.

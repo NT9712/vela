@@ -54,6 +54,8 @@ const WinRecv: Int = 42
 const CloseSocket: Int = 43
 const WinSetSockOpt: Int = 44
 const WinShutdown: Int = 45
+const WinDeviceIoControl: Int = 46
+const WinSelect: Int = 47
 
 // File descriptors 0, 1 and 2 are mapped onto the standard handles; anything
 // else is already a HANDLE.
@@ -585,4 +587,22 @@ pub fn sock_recv(fd: Int, buf: Int, n: Int) -> Int {
 pub fn sock_close(fd: Int) {
     @winapi(WinShutdown, fd, 2)
     @winapi(CloseSocket, fd)
+}
+
+pub fn select(nfds: Int, readfds: Int, writefds: Int, exceptfds: Int, timeout: Int) -> Int {
+    return @winapi(WinSelect, nfds, readfds, writefds, exceptfds, timeout)
+}
+
+// Stubs for Linux/macOS-specific syscalls
+pub fn epoll_create1(_flags: Int) -> Int { return -38 }
+pub fn epoll_ctl(_epfd: Int, _op: Int, _fd: Int, _ev: Int) -> Int { return -38 }
+pub fn epoll_wait(_epfd: Int, _events: Int, _maxevents: Int, _timeout: Int) -> Int { return -38 }
+pub fn timerfd_create(_clockid: Int, _flags: Int) -> Int { return -38 }
+pub fn timerfd_settime(_fd: Int, _flags: Int, _its: Int, _old: Int) -> Int { return -38 }
+pub fn kqueue() -> Int { return -38 }
+pub fn kevent(_kq: Int, _changelist: Int, _nchanges: Int, _eventlist: Int, _nevents: Int, _timeout: Int) -> Int { return -38 }
+
+pub fn ioctl(fd: Int, req: Int, arg: Int) -> Int {
+    // Windows uses DeviceIoControl
+    return @winapi(WinDeviceIoControl, fd, req, arg, 0, 0, 0, 0, 0)
 }

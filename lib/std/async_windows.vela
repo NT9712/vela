@@ -1,0 +1,67 @@
+// Async I/O for Windows (select)
+
+use core
+use core/sys
+
+pub const EV_READ: Int = 1
+pub const EV_WRITE: Int = 2
+pub const EV_ERROR: Int = 4
+pub const EV_HUP: Int = 8
+
+pub struct PollHandle {
+    // On Windows we just use select, so we track the highest fd
+    max_fd: Int,
+}
+
+pub struct PollEvent {
+    fd: Int,
+    events: Int,
+    data: Int,
+}
+
+pub fn poll_new() -> !PollHandle {
+    return ok(PollHandle{ max_fd: 0 })
+}
+
+pub fn poll_add(p: PollHandle, fd: Int, _events: Int, _data: Int) -> !Void {
+    if fd > p.max_fd { p.max_fd = fd }
+    return ok(void)
+}
+
+pub fn poll_wait(p: PollHandle, timeout_ms: Int) -> ![PollEvent] {
+    // Use select with timeout
+    // fd_set is an array of 64-bit words, 1024 bits = 16 words = 128 bytes
+    let read_fds = core.alloc(128, 0) + 16
+    let write_fds = core.alloc(128, 0) + 16
+    let except_fds = core.alloc(128, 0) + 16
+    
+    // For simplicity, we track fds up to 64
+    // In a real implementation, we'd track all registered fds
+    
+    let timeval = scratch(200, 32)
+    @store64(timeval, timeout_ms / 1000)
+    @store64(timeval + 8, (timeout_ms % 1000) * 1000)
+    
+    // This is a simplified implementation
+    // Real implementation would track registered fds
+    let count = sys.select(0, read_fds, write_fds, except_fds, timeout_ms)
+    if count < 0 { return err("select failed") }
+    
+    let out: [PollEvent] = []
+    // Simplified - just return empty for now
+    return ok(out)
+}
+
+pub fn poll_close(p: PollHandle) {
+    // nothing to close
+}
+
+fn scratch(off: Int, n: Int) -> Int {
+    let p = @rt_base() + 512 + off
+    let mut i = 0
+    while i < n {
+        @store8(p + i, 0)
+        i += 1
+    }
+    return p
+}

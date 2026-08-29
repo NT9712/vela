@@ -30,6 +30,15 @@ pub const SYS_NANOSLEEP: Int = 101
 pub const SYS_CLOCK_GETTIME: Int = 113
 pub const SYS_GETDENTS64: Int = 61
 
+// epoll
+pub const SYS_EPOLL_CREATE1: Int = 291
+pub const SYS_EPOLL_CTL: Int = 292
+pub const SYS_EPOLL_WAIT: Int = 293
+
+// timerfd
+pub const SYS_TIMERFD_CREATE: Int = 350
+pub const SYS_TIMERFD_SETTIME: Int = 352
+
 /// Byte offsets into `struct stat`, which differs between architectures.
 pub const STAT_SIZE: Int = 160
 pub const STAT_MODE_OFF: Int = 16
@@ -227,6 +236,11 @@ pub const SOCK_STREAM: Int = 1
 pub const SOL_SOCKET: Int = 1
 pub const SO_REUSEADDR: Int = 2
 
+// Terminal ioctl constants
+pub const TCGETS: Int = 0x5401
+pub const TCSETS: Int = 0x5402
+pub const TIOCGWINSZ: Int = 0x5413
+
 pub fn net_init() {}
 
 pub fn socket_tcp() -> Int {
@@ -266,6 +280,30 @@ pub fn sock_recv(fd: Int, buf: Int, n: Int) -> Int {
 pub fn sock_close(fd: Int) {
     @syscall(SYS_SHUTDOWN, fd, 2)
     close(fd)
+}
+
+pub fn epoll_create1(flags: Int) -> Int {
+    return @syscall(SYS_EPOLL_CREATE1, flags)
+}
+
+pub fn epoll_ctl(epfd: Int, op: Int, fd: Int, ev: Int) -> Int {
+    return @syscall(SYS_EPOLL_CTL, epfd, op, fd, ev)
+}
+
+pub fn epoll_wait(epfd: Int, events: Int, maxevents: Int, timeout: Int) -> Int {
+    return @syscall(SYS_EPOLL_WAIT, epfd, events, maxevents, timeout)
+}
+
+pub fn timerfd_create(clockid: Int, flags: Int) -> Int {
+    return @syscall(SYS_TIMERFD_CREATE, clockid, flags)
+}
+
+pub fn timerfd_settime(fd: Int, flags: Int, its: Int, old: Int) -> Int {
+    return @syscall(SYS_TIMERFD_SETTIME, fd, flags, its, old)
+}
+
+pub fn ioctl(fd: Int, req: Int, arg: Int) -> Int {
+    return @syscall(SYS_IOCTL, fd, req, arg)
 }
 
 /// Windows hands the program one command-line string and one environment

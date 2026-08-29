@@ -197,6 +197,10 @@ selfcheck_tests() {
            "$ROOT"/examples/*.vela "$ROOT"/tests/run/*.vela "$ROOT"/tests/lib/*.vela \
            "$ROOT"/bench/*.vela; do
     n=$((n+1))
+    # Skip platform-specific async implementations (only valid on their target)
+    case "$(basename "$f")" in
+      async_linux.vela|async_macos.vela|async_windows.vela) continue ;;
+    esac
     if ! "$VELAC" -q --no-color --check "$f" >"$TMP/sc.txt" 2>&1; then
       bad "self-check $(basename "$f")" "$(head -6 "$TMP/sc.txt")"; bad_any=1
     fi

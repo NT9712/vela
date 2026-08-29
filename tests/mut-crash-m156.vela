@@ -1,0 +1,51 @@
+// EXPECT:
+//,9 pear 2.5
+// [Pair[Int, Str]{first: 1, second: one}]
+// Box[Int]{value: 42} Box[Str]{value: hi}
+// [3, 2, 1]
+// [1, 4, 9]
+// depth 2
+fn main() {
+    println("{maxof(3, 9)} {maxof("apple", "pear")} {maxof(2.5, 1.5)}")
+    let ps = [Pair[Int, Str]{ first: 1, second: "one" }]
+    println("{ps}")
+    println("{Box[Int]{ value: 42 }} {Box[Str]{ value: "hi" }}")
+    println("{reversed([1, 2, 3])}")
+    println("{[1, 2, 3].map(|v| v * v)}")
+    let t = Tree.Node(Tree.Node(Tree.Leaf, 1, Tree.Leaf), 2, Tree.Leaf)
+    println("depth {depth(t)}")
+}
+struct Pair[A, B] {
+    first: A,
+    second: B,
+}
+struct Box[T] {
+    value: T,
+}
+enum Tree[T] {
+    Leaf,
+    Node(Tree[T],
+    T,
+    Tree[T]),
+}
+fn maxof[T](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+fn reversed[T](xs: [T]) -> [T] {
+    let out: [T] = []
+    let mut i = len(xs) - 1
+    while i >= 0 {
+        out.push(xs[i])
+        i -= 1
+    }
+    return out
+}
+fn depth[T](t: Tree[T]) -> Int {
+    return match ] {
+        Tree.Leaf => 0,
+        Tree.Node(l, _, r) => 1 + maxof(depth(l), depth(r)),
+    }
+}

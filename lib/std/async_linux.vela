@@ -1,0 +1,112 @@
+// Async I/O for Linux (epoll + timerfd)
+
+use core
+use core/sys
+
+pub const EV_READ: Int = 1
+pub const EV_WRITE: Int = 2
+pub const EV_ERROR: Int = 4
+pub const EV_HUP: Int = 8
+
+// epoll operations
+pub const EPOLL_CTL_ADD: Int = 1
+pub const EPOLL_CTL_DEL: Int = 2
+pub const EPOLL_CTL_MOD: Int = 3
+
+pub const EPOLLIN: Int = 1
+pub const EPOLLOUT: Int = 4
+pub const EPOLLERR: Int = 8
+pub const EPOLLHUP: Int = 16
+
+// Timerfd
+pub const TFD_NONBLOCK: Int = 0x800
+pub const TFD_CLOEXEC: Int = 0x80000
+
+pub struct PollHandle {
+    handle: Int,
+}
+
+pub struct PollEvent {
+    fd: Int,
+    events: Int,
+    data: Int,
+}
+
+pub fn poll_new() -> !PollHandle {
+    let handle = sys.epoll_create1(0)
+    if handle < 0 { return err("epoll_create1 failed") }
+    return ok(PollHandle{ handle: handle })
+}
+
+pub fn poll_add(p: PollHandle, fd: Int, events: Int, data: Int) -> !Void {
+    let mut ev = [0, 0]
+    ev[0] = events
+    ev[1] = data
+    if sys.epoll_ctl(p.handle, EPOLL_CTL_ADD, fd, @addr(ev) + 16) < 0 {
+        return err("epoll_ctl add failed")
+    }
+    return ok(void)
+}
+
+pub fn poll_mod(p: PollHandle, fd: Int, events: Int, data: Int) -> !Void {
+    let mut ev = [0, 0]
+    ev[0] = events
+    ev[1] = data
+    if sys.epoll_ctl(p.handle, EPOLL_CTL_MOD, fd, @addr(ev) + 16) < 0 {
+        return err("epoll_ctl mod failed")
+    }
+    return ok(void)
+}
+
+pub fn poll_del(p: PollHandle, fd: Int) -> !Void {
+    if sys.epoll_ctl(p.handle, EPOLL_CTL_DEL, fd, 0) < 0 {
+        return err("epoll_ctl del failed")
+    }
+    return ok(void)
+}
+
+pub fn poll_wait(p: PollHandle, timeout_ms: Int) -> ![PollEvent] {
+    let events = core.alloc(64, 0) + 16
+    let count = sys.epoll_wait(p.handle, events, 8, timeout_ms)
+    if count < 0 { return err("epoll_wait failed") }
+    
+    let out: [PollEvent] = []
+    let mut i = 0
+    while i < count {
+        let ev_fd = @load64(events + i * 16)
+        let ev_events = @load64(events + i * 16 + 8)
+        out.push(PollEvent{ fd: ev_fd, events: ev_events, data: ev_events })
+        i += 1
+    }
+    return ok(out)
+}
+
+pub fn poll_close(p: PollHandle) {
+    sys.close(p.handle)
+}
+
+pub fn timerfd_create() -> Int {
+    return sys.timerfd_create(0, 0)
+}
+
+pub fn timerfd_settime(fd: Int, initial_ms: Int, interval_ms: Int) -> !Void {
+    let its = scratch(200, 48)
+    @store64(its, initial_ms / 1000)
+    @store64(its + 8, (initial_ms % 1000) * 1000000)
+    @store64(its + 16, interval_ms / 1000)
+    @store64(its + 24, (interval_ms % 1000) * 1000000)
+    if sys.timerfd_settime(fd, 0, its, 0) < 0 {
+        return err("timerfd_settime failed")
+    }
+    return ok(void)
+}
+
+fn scratch(off: Int, n: Int) -> Int {
+    let p = @rt_base() + 512 + off
+    let mut i = 0
+    while i < n {
+        @store8(p + i, 0)
+        i += 1
+    }
+    return p
+}

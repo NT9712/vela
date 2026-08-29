@@ -1,0 +1,35 @@
+// Async I/O - platform-independent interface
+// This file defines the common interface.
+// Platform-specific implementations are in async_linux.vela, async_macos.vela, async_windows.vela
+// Applications should `use std/async_linux`, `std/async_macos`, or `std/async_windows` directly,
+// or use `use std/async` with target-specific resolution.
+
+use core
+
+pub const EV_READ: Int = 1
+pub const EV_WRITE: Int = 2
+pub const EV_ERROR: Int = 4
+pub const EV_HUP: Int = 8
+
+pub struct PollHandle {
+    handle: Int,
+    max_fd: Int,
+}
+
+pub struct PollEvent {
+    fd: Int,
+    events: Int,
+    data: Int,
+}
+
+// These are implemented in platform-specific files:
+// Linux: std/async_linux.vela (epoll + timerfd)
+// macOS: std/async_macos.vela (kqueue)  
+// Windows: std/async_windows.vela (select)
+//
+// Use the platform-specific module directly for full functionality:
+//   use std/async_linux
+//   use std/async_macos
+//   use std/async_windows
+
+

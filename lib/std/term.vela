@@ -1,0 +1,229 @@
+// Terminal control primitives — ANSI escape codes, raw mode, mouse, colors
+use core
+use core/sys
+
+/// A slice of the runtime scratch area, zeroed.
+fn scratch(off: Int, n: Int) -> Int {
+    let p = @rt_base() + 512 + off
+    let mut i = 0
+    while i < n {
+        @store8(p + i, 0)
+        i += 1
+    }
+    return p
+}
+
+/// Terminal capabilities detection
+pub const TERM_UNKNOWN: Int = 0
+pub const TERM_XTERM: Int = 1
+pub const TERM_VT100: Int = 2
+pub const TERM_ANSI: Int = 3
+
+// ANSI escape sequences
+pub const ESC: Str = "\x1b["
+pub const RESET: Str = ESC + "0m"
+pub const BOLD: Str = ESC + "1m"
+pub const DIM: Str = ESC + "2m"
+pub const UNDERLINE: Str = ESC + "4m"
+pub const BLINK: Str = ESC + "5m"
+pub const REVERSE: Str = ESC + "7m"
+pub const HIDDEN: Str = ESC + "8m"
+
+// Colors (16-color)
+pub const FG_BLACK: Str = ESC + "30m"
+pub const FG_RED: Str = ESC + "31m"
+pub const FG_GREEN: Str = ESC + "32m"
+pub const FG_YELLOW: Str = ESC + "33m"
+pub const FG_BLUE: Str = ESC + "34m"
+pub const FG_MAGENTA: Str = ESC + "35m"
+pub const FG_CYAN: Str = ESC + "36m"
+pub const FG_WHITE: Str = ESC + "37m"
+pub const FG_BRIGHT_BLACK: Str = ESC + "90m"
+pub const FG_BRIGHT_RED: Str = ESC + "91m"
+pub const FG_BRIGHT_GREEN: Str = ESC + "92m"
+pub const FG_BRIGHT_YELLOW: Str = ESC + "93m"
+pub const FG_BRIGHT_BLUE: Str = ESC + "94m"
+pub const FG_BRIGHT_MAGENTA: Str = ESC + "95m"
+pub const FG_BRIGHT_CYAN: Str = ESC + "96m"
+pub const FG_BRIGHT_WHITE: Str = ESC + "97m"
+
+pub const BG_BLACK: Str = ESC + "40m"
+pub const BG_RED: Str = ESC + "41m"
+pub const BG_GREEN: Str = ESC + "42m"
+pub const BG_YELLOW: Str = ESC + "43m"
+pub const BG_BLUE: Str = ESC + "44m"
+pub const BG_MAGENTA: Str = ESC + "45m"
+pub const BG_CYAN: Str = ESC + "46m"
+pub const BG_WHITE: Str = ESC + "47m"
+pub const BG_BRIGHT_BLACK: Str = ESC + "100m"
+pub const BG_BRIGHT_RED: Str = ESC + "101m"
+pub const BG_BRIGHT_GREEN: Str = ESC + "102m"
+pub const BG_BRIGHT_YELLOW: Str = ESC + "103m"
+pub const BG_BRIGHT_BLUE: Str = ESC + "104m"
+pub const BG_BRIGHT_MAGENTA: Str = ESC + "105m"
+pub const BG_BRIGHT_CYAN: Str = ESC + "106m"
+pub const BG_BRIGHT_WHITE: Str = ESC + "107m"
+
+// 256-color and truecolor helpers
+pub fn fg256(n: Int) -> Str { return ESC + "38;5;" + str(n) + "m" }
+pub fn bg256(n: Int) -> Str { return ESC + "48;5;" + str(n) + "m" }
+pub fn fg_rgb(r: Int, g: Int, b: Int) -> Str { return ESC + "38;2;" + str(r) + ";" + str(g) + ";" + str(b) + "m" }
+pub fn bg_rgb(r: Int, g: Int, b: Int) -> Str { return ESC + "48;2;" + str(r) + ";" + str(g) + ";" + str(b) + "m" }
+
+// Cursor control
+pub fn cursor_up(n: Int) -> Str { return ESC + str(n) + "A" }
+pub fn cursor_down(n: Int) -> Str { return ESC + str(n) + "B" }
+pub fn cursor_right(n: Int) -> Str { return ESC + str(n) + "C" }
+pub fn cursor_left(n: Int) -> Str { return ESC + str(n) + "D" }
+pub fn cursor_next_line(n: Int) -> Str { return ESC + str(n) + "E" }
+pub fn cursor_prev_line(n: Int) -> Str { return ESC + str(n) + "F" }
+pub fn cursor_col(n: Int) -> Str { return ESC + str(n) + "G" }
+pub fn cursor_pos(row: Int, col: Int) -> Str { return ESC + str(row) + ";" + str(col) + "H" }
+pub fn cursor_save() -> Str { return ESC + "s" }
+pub fn cursor_restore() -> Str { return ESC + "u" }
+pub fn cursor_hide() -> Str { return ESC + "?25l" }
+pub fn cursor_show() -> Str { return ESC + "?25h" }
+
+// Screen/line clearing
+pub fn clear_screen() -> Str { return ESC + "2J" }
+pub fn clear_line() -> Str { return ESC + "2K" }
+pub fn clear_line_right() -> Str { return ESC + "0K" }
+pub fn clear_line_left() -> Str { return ESC + "1K" }
+pub fn clear_below() -> Str { return ESC + "0J" }
+pub fn clear_above() -> Str { return ESC + "1J" }
+pub fn scroll_up(n: Int) -> Str { return ESC + str(n) + "S" }
+pub fn scroll_down(n: Int) -> Str { return ESC + str(n) + "T" }
+
+// Terminal size (requires ioctl)
+pub struct TermSize { rows: Int, cols: Int }
+
+pub fn get_term_size() -> TermSize {
+    let sz = TermSize{ rows: 24, cols: 80 }
+    if sys.is_tty(0) {
+        // Try to get actual size via ioctl
+        let ws = scratch(200, 8)
+        if sys.ioctl(0, sys.TIOCGWINSZ, ws) == 0 {
+            sz.rows = @load16(ws)
+            sz.cols = @load16(ws + 2)
+        }
+    }
+    return sz
+}
+
+// Raw mode
+pub fn enable_raw_mode() -> !Void {
+    if sys.is_tty(0) {
+        let termios = scratch(200, 60)
+        if sys.ioctl(0, sys.TCGETS, termios) == 0 {
+            let mut flags = @load32(termios + 12)  // c_lflag
+            flags = flags & ~(0x00000002 | 0x00000010 | 0x00000020 | 0x00000100)  // ~ECHO | ~ICANON | ~ISIG | ~IEXTEN
+            @store32(termios + 12, flags)
+            // VMIN=1, VTIME=0
+            @store8(termios + 18, 1)
+            @store8(termios + 19, 0)
+            if sys.ioctl(0, sys.TCSETS, termios) != 0 {
+                return err("tcsets failed")
+            }
+        }
+    }
+    return ok(void)
+}
+
+pub fn disable_raw_mode() -> !Void {
+    if sys.is_tty(0) {
+        let termios = scratch(200, 60)
+        if sys.ioctl(0, sys.TCGETS, termios) == 0 {
+            let mut flags = @load32(termios + 12)
+            flags = flags | 0x00000002 | 0x00000010 | 0x00000020 | 0x00000100
+            @store32(termios + 12, flags)
+            if sys.ioctl(0, sys.TCSETS, termios) != 0 {
+                return err("tcsets failed")
+            }
+        }
+    }
+    return ok(void)
+}
+
+// Mouse tracking
+pub fn enable_mouse() -> Str { return ESC + "?1000;1002;1006h" }  // X10, UTF-8, SGR
+pub fn disable_mouse() -> Str { return ESC + "?1000;1002;1006l" }
+
+// Alternate screen buffer
+pub fn alt_screen_on() -> Str { return ESC + "?1049h" }
+pub fn alt_screen_off() -> Str { return ESC + "?1049l" }
+
+// Bracketed paste mode
+pub fn bracketed_paste_on() -> Str { return ESC + "?2004h" }
+pub fn bracketed_paste_off() -> Str { return ESC + "?2004l" }
+
+// Input parsing (mouse events, key sequences)
+pub struct MouseEvent {
+    kind: Int,      // 0=press, 1=release, 2=motion, 3=wheel
+    button: Int,    // 0=left, 1=middle, 2=right, 4=wheel
+    row: Int,
+    col: Int,
+    mods: Int,      // shift/ctrl/alt
+}
+
+pub struct KeyEvent {
+    key: Str,
+    code: Int,
+    mods: Int,
+}
+
+// Parse input sequence
+// Input event types
+pub struct InputEvent {
+    kind: Int,  // 0=key, 1=mouse, 2=raw
+    key: KeyEvent,
+    mouse: MouseEvent,
+    raw: Str,
+}
+
+pub fn parse_input(buf: Str) -> InputEvent {
+    if buf.starts_with("[<") {
+        // SGR mouse: [<Cb;Cx;CyM/m
+        let rest = buf[3..len(buf)-1]
+        let parts = rest.split(";")
+        if len(parts) >= 3 {
+            let cb = int(parts[0]) ?? 0
+            let cx = int(parts[1]) ?? 0
+            let cy = int(parts[2]) ?? 0
+            return InputEvent{
+                kind: 1,
+                key: KeyEvent{ key: "", code: 0, mods: 0 },
+                mouse: MouseEvent{
+                    kind: cb & 3,
+                    button: (cb >> 2) & 3,
+                    row: cy,
+                    col: cx,
+                    mods: cb >> 4,
+                },
+                raw: "",
+            }
+        }
+    } else if buf.starts_with("[") {
+        // Key sequences
+        let last = buf[len(buf)-1]
+        let seq = buf[2..len(buf)-1]
+        return InputEvent{
+            kind: 0,
+            key: KeyEvent{ key: seq, code: int(last), mods: 0 },
+            mouse: MouseEvent{ kind: 0, button: 0, row: 0, col: 0, mods: 0 },
+            raw: "",
+        }
+    }
+    return InputEvent{ kind: 2, key: KeyEvent{ key: "", code: 0, mods: 0 }, mouse: MouseEvent{ kind: 0, button: 0, row: 0, col: 0, mods: 0 }, raw: buf }
+}
+
+pub fn write_stdout(s: Str) -> !Void {
+    let n = sys.write(1, @addr(s) + 16, len(s))
+    if n < 0 { return err("write failed") }
+    return ok(void)
+}
+
+pub fn write_stderr(s: Str) -> !Void {
+    let n = sys.write(2, @addr(s) + 16, len(s))
+    if n < 0 { return err("write failed") }
+    return ok(void)
+}
