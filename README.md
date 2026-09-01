@@ -49,13 +49,42 @@ Vela's bet is that a language can be both if it stays small:
 
 ## Install
 
+**One-liner (all platforms):**
 ```console
-$ curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-linux-x86_64.tar.gz | tar xz
-$ cd vela-1.1.0-linux-x86_64 && ./install.sh ~/.local
-$ export PATH="$HOME/.local/bin:$PATH"
-$ vela version
-vela 1.0.0
+curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-$(uname -s)-$(uname -m).tar.gz | tar xz && ./install.sh ~/.local
+export PATH="$HOME/.local/bin:$PATH"
+vela version
 ```
+
+**Explicit per-platform:**
+```console
+# Linux x86_64
+curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-linux-x86_64.tar.gz | tar xz
+cd vela-1.1.0-linux-x86_64 && ./install.sh ~/.local
+
+# Linux arm64
+curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-linux-arm64.tar.gz | tar xz
+cd vela-1.1.0-linux-arm64 && ./install.sh ~/.local
+
+# Windows x86_64
+curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-windows-x86_64.tar.gz | tar xz
+cd vela-1.1.0-windows-x86_64 && ./install.sh ~/.local
+
+# macOS x86_64 (Intel)
+curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-macos-x86_64.tar.gz | tar xz
+cd vela-1.1.0-macos-x86_64 && ./install.sh ~/.local
+
+# macOS arm64 (Apple Silicon)
+curl -fsSL https://github.com/NT9712/vela/releases/latest/download/vela-1.1.0-macos-arm64.tar.gz | tar xz
+cd vela-1.1.0-macos-arm64 && ./install.sh ~/.local
+
+export PATH="$HOME/.local/bin:$PATH"
+vela version
+```
+
+> **Note:** macOS arm64 cross-compiled binaries are structurally valid but execution is blocked by Apple's AMFI policy. Cross-compilation works; native execution requires building on macOS.
+
+> **Windows:** Run the extracted `.exe` files from PowerShell or cmd
 
 Or build from source — Vela needs a C compiler once, for the bootstrap
 compiler. After that the toolchain is Vela all the way down.

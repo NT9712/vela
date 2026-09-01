@@ -40,11 +40,10 @@ jobs:
       - name: test
         run: ./tests/run.sh
 
-      - name: package
+      - name: package all platforms
         id: pkg
         run: |
-          make dist VERSION="${{ steps.v.outputs.version }}" ARCH=x86_64
-          make dist VERSION="${{ steps.v.outputs.version }}" ARCH=arm64
+          make dist-all VERSION="${{ steps.v.outputs.version }}"
           cd dist
           for f in *.tar.gz; do sha256sum "$f" > "$f.sha256"; done
           ls -l
@@ -65,13 +64,25 @@ jobs:
             echo '### Install'
             echo
             echo '```console'
-            echo "# x86-64"
+            echo "# Linux x86-64"
             echo "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/vela-${{ steps.v.outputs.version }}-linux-x86_64.tar.gz | tar xz"
             echo "cd vela-${{ steps.v.outputs.version }}-linux-x86_64 && ./install.sh ~/.local"
             echo
-            echo "# arm64"
+            echo "# Linux arm64"
             echo "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/vela-${{ steps.v.outputs.version }}-linux-arm64.tar.gz | tar xz"
             echo "cd vela-${{ steps.v.outputs.version }}-linux-arm64 && ./install.sh ~/.local"
+            echo
+            echo "# Windows x86-64"
+            echo "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/vela-${{ steps.v.outputs.version }}-windows-x86_64.tar.gz | tar xz"
+            echo "cd vela-${{ steps.v.outputs.version }}-windows-x86_64 && ./install.sh ~/.local"
+            echo
+            echo "# macOS x86-64 (Intel)"
+            echo "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/vela-${{ steps.v.outputs.version }}-macos-x86_64.tar.gz | tar xz"
+            echo "cd vela-${{ steps.v.outputs.version }}-macos-x86_64 && ./install.sh ~/.local"
+            echo
+            echo "# macOS arm64 (Apple Silicon)"
+            echo "curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/vela-${{ steps.v.outputs.version }}-macos-arm64.tar.gz | tar xz"
+            echo "cd vela-${{ steps.v.outputs.version }}-macos-arm64 && ./install.sh ~/.local"
             echo 'export PATH="$HOME/.local/bin:$PATH"'
             echo 'vela new hello && cd hello && vela run'
             echo '```'
@@ -86,7 +97,7 @@ jobs:
             echo
             echo '| binary | what it is |'
             echo '|--------|------------|'
-            echo '| `velac` | the compiler: source to static ELF64, no linker |'
+            echo '| `velac` | the compiler: source to static binary, no linker |'
             echo '| `vela` | the toolchain driver, written in Vela |'
             echo '| `vela-lsp` | the language server, written in Vela |'
             echo

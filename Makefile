@@ -104,6 +104,14 @@ site-deploy: site
 # Vela-written tools with velac and cross-builds velac itself with $(CROSS_CC).
 CROSS_CC ?= aarch64-linux-gnu-gcc
 
+# Build all platform tarballs
+dist-all:
+	$(MAKE) dist OS=linux ARCH=x86_64
+	$(MAKE) dist OS=linux ARCH=arm64
+	$(MAKE) dist OS=windows ARCH=x86_64
+	$(MAKE) dist OS=macos ARCH=x86_64
+	$(MAKE) dist OS=macos ARCH=arm64
+
 dist: all
 	rm -rf dist/$(DISTNAME)
 	mkdir -p dist/$(DISTNAME)/bin dist/$(DISTNAME)/lib
@@ -122,25 +130,11 @@ endif
 	cp -r editor docs examples spec           dist/$(DISTNAME)/
 	cp README.md LICENSE                      dist/$(DISTNAME)/
 	rm -rf dist/$(DISTNAME)/examples/todo/deps dist/$(DISTNAME)/examples/todo/build
-	printf '%s\n' \
-	  '#!/usr/bin/env sh' \
-	  '# install.sh [prefix]   default prefix: /usr/local' \
-	  'set -eu' \
-	  'P="$${1:-/usr/local}"' \
-	  'mkdir -p "$$P/bin" "$$P/lib/vela"' \
-	  'cp bin/velac bin/vela bin/vela-lsp "$$P/bin/"' \
-	  'cp -r lib/core lib/std "$$P/lib/vela/"' \
-	  'echo' \
-	  'echo "installed to $$P"' \
-	  'echo' \
-	  'echo "  export PATH=\"$$P/bin:\$$PATH\""' \
-	  'echo "  export VELA_ROOT=\"$$P/lib/vela\""' \
-	  > dist/$(DISTNAME)/install.sh
+	sed -e 's|@HOME@|$${HOME}|g' -e 's|@P@|$${P}|g' -e 's|@PATH@|$${PATH}|g' scripts/install.sh.template > dist/$(DISTNAME)/install.sh
 	chmod +x dist/$(DISTNAME)/install.sh
 	cd dist && tar czf $(DISTNAME).tar.gz $(DISTNAME)
 	@echo
 	@ls -lh dist/$(DISTNAME).tar.gz
-
 clean:
 	rm -f bootstrap/src/*.o bin/velac bin/vela bin/vela-lsp site/build
 	rm -rf build dist site/public examples/todo/build examples/todo/store/build

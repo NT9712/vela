@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# install.sh [prefix]   default prefix: ~/.local
+# One-liner: curl -fsSL <url> | sh
+set -eu
+P="${1:-@HOME@/.local}"
+mkdir -p "@P@/bin" "@P@/lib/vela"
+cp bin/velac bin/vela bin/vela-lsp "@P@/bin/" 2>/dev/null || cp bin/vela bin/vela-lsp "@P@/bin/"
+cp -r lib/core lib/std "@P@/lib/vela/"
+echo
+echo "vela installed to @P@"
+echo
+echo "  export PATH="@P@/bin:@PATH@""
+echo "  export VELA_ROOT="@P@/lib/vela""
+echo "  vela --help  # to get started"
